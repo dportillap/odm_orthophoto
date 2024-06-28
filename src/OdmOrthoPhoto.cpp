@@ -479,27 +479,7 @@ void OdmOrthoPhoto::createOrthoPhoto()
                 // The first material determines the bit depth
                 // Unless it's already set by outputDepthIdx
                 if (textureDepth == -1) textureDepth = texture.depth();
-                else if (textureDepth != texture.depth()){
-                    // Try to convert
-                    if (textureDepth == CV_8U){
-                        if (texture.depth() == CV_16U){
-                            // 16U to 8U
-                            texture.convertTo(texture, CV_8U, 255.0f / 65535.0f);
-                        }else{
-                            throw OdmOrthoPhotoException("Unknown conversion from CV_8U");
-                        }
-                    }else if (textureDepth == CV_16U){
-                        if (texture.depth() == CV_8U){
-                            // 8U to 16U
-                            texture.convertTo(texture, CV_16U, 65535.0f / 255.0f);
-                        }else{
-                            throw OdmOrthoPhotoException("Unknown conversion from CV_16U");
-                        }
-                    }else{
-                         throw OdmOrthoPhotoException("Texture depth is not the same for all models and could not be converted");
-                    }
-                }
-
+                
                 log_ << "Texture channels: " << texture.channels() << "\n";
 
                 try{
@@ -522,6 +502,27 @@ void OdmOrthoPhoto::createOrthoPhoto()
                 }catch(const std::bad_alloc &){
                     std::cerr << "Couldn't allocate enough memory to render the orthophoto (" << width << "x" << height << " cells = " << ((long long)width * (long long)height * 4) << " bytes). Try to increase the --orthophoto-resolution parameter to a larger integer or add more RAM.\n";
                     exit(1);
+                }
+            }
+
+            if (textureDepth != texture.depth()){
+                // Try to convert
+                if (textureDepth == CV_8U){
+                    if (texture.depth() == CV_16U){
+                        // 16U to 8U
+                        texture.convertTo(texture, CV_8U, 255.0f / 65535.0f);
+                    }else{
+                        throw OdmOrthoPhotoException("Unknown conversion from CV_8U");
+                    }
+                }else if (textureDepth == CV_16U){
+                    if (texture.depth() == CV_8U){
+                        // 8U to 16U
+                        texture.convertTo(texture, CV_16U, 65535.0f / 255.0f);
+                    }else{
+                        throw OdmOrthoPhotoException("Unknown conversion from CV_16U");
+                    }
+                }else{
+                        throw OdmOrthoPhotoException("Texture depth is not the same for all models and could not be converted");
                 }
             }
 
