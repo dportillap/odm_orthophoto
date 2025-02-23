@@ -1025,7 +1025,8 @@ void OdmOrthoPhoto::loadObjFile(std::string inputFile, TextureMesh &mesh)
 
                                         mesh.materials[currentMaterial] = texture;
                                     }else{
-                                        log_ << "Material texture could not be read: " << mapFname << "\n";
+                                        std::cerr << "Material texture could not be read: " << mapFname << "\n";
+                                        exit(1);                                        
                                     }
 
                                 }
