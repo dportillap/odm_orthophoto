@@ -114,7 +114,9 @@ private:
 
     template <typename T>
     void finalizeAlphaBand();
+    
 
+    cv::Mat readTexture(const std::string &filename);
     void saveTIFF(const std::string &filename, GDALDataType dataType);
     
     /*!

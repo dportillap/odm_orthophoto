@@ -232,6 +232,58 @@ void OdmOrthoPhoto::printHelp()
     log_.setIsPrintingInCout(false);
 }
 
+cv::Mat OdmOrthoPhoto::readTexture(const std::string &filename){
+    cv::Mat texture = cv::imread(filename, cv::IMREAD_ANYDEPTH | cv::IMREAD_UNCHANGED);
+    if (texture.empty()){
+        // Try with GDAL instead
+        // this can happen with certain TIFF files (e.g. large 3 band 16bit TIFFs)
+        log_ << "Cannot read " << filename << " with OpenCV, fallback to GDAL...\n";
+
+        GDALAllRegister();
+        GDALDatasetH dataset = GDALOpen(filename.c_str(), GA_ReadOnly);
+        if (!dataset) {
+            std::cerr << "Error: Could not open image with GDAL.\n";
+            exit(1);
+        }
+
+        int width = GDALGetRasterXSize(dataset);
+        int height = GDALGetRasterYSize(dataset);
+        int numBands = GDALGetRasterCount(dataset);
+        GDALDataType gdalType = GDALGetRasterDataType(GDALGetRasterBand(dataset, 1));
+
+         // Map GDAL data type to OpenCV type
+        int cvType;
+        switch (gdalType) {
+            case GDT_Byte:    cvType = CV_8UC1; break;
+            case GDT_UInt16:  cvType = CV_16UC1; break;
+            case GDT_Int16:   cvType = CV_16SC1; break;
+            case GDT_Float32: cvType = CV_32FC1; break;
+            case GDT_Float64: cvType = CV_64FC1; break;
+            default:
+                std::cerr << "Unsupported GDAL data type.\n";
+                exit(1);
+        }
+
+        texture = cv::Mat(height, width, CV_MAKETYPE(cvType, numBands));
+        for (int i = 0; i < numBands; i++) {
+            GDALRasterBandH band = GDALGetRasterBand(dataset, i + 1);
+            if (GDALRasterIO(band, GF_Read, 0, 0, width, height, texture.data + i * texture.elemSize1(), width, height, gdalType, texture.elemSize1() * numBands, texture.step) != CE_None) {
+                std::cerr << "Error reading raster band " << i + 1 << ".\n";
+                exit(1);
+            }
+        }
+
+        GDALClose(dataset);
+    }else{
+        // BGR to RGB when necessary
+        if (texture.channels() == 3){
+            cv::cvtColor(texture, texture, cv::COLOR_BGR2RGB);
+        }
+    }
+
+    return texture;
+}
+
 void OdmOrthoPhoto::saveTIFF(const std::string &filename, GDALDataType dataType){
     GDALAllRegister();
     GDALDriverH hDriver = GDALGetDriverByName( "GTiff" );
@@ -1016,13 +1068,8 @@ void OdmOrthoPhoto::loadObjFile(std::string inputFile, TextureMesh &mesh)
                                     // Read file in memory
                                     log_ << "Loading " << mapFname << "\n";
 
-                                    cv::Mat texture = cv::imread(matPath.string(), cv::IMREAD_ANYDEPTH | cv::IMREAD_UNCHANGED);
+                                    cv::Mat texture = readTexture(matPath.string());
                                     if(!texture.empty()){
-                                        // BGR to RGB when necessary
-                                        if (texture.channels() == 3){
-                                            cv::cvtColor(texture, texture, cv::COLOR_BGR2RGB);
-                                        }
-
                                         mesh.materials[currentMaterial] = texture;
                                     }else{
                                         std::cerr << "Material texture could not be read: " << mapFname << "\n";
