@@ -17,51 +17,57 @@ jobs:
         activate-environment: odm_build
         python-version: 3.9
         
-    # 2. Instalamos las librerías
+    # 2. Instalación por partes (Divide y Vencerás)
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
-        mamba install -c conda-forge cmake ninja gdal opencv pcl boost eigen -y
+        # Instalamos herramientas base
+        mamba install -c conda-forge cmake ninja compilers -y
+        # Instalamos librerías pesadas por separado para evitar conflictos
+        mamba install -c conda-forge gdal opencv boost eigen -y
+        # Instalamos PCL forzando reinstalación
+        mamba install -c conda-forge pcl --force-reinstall -y
         
-    # 3. El Detective Python (Busca las rutas exactas)
-    - name: Locate Libraries
-      shell: bash -l {0}
-      run: |
-        python -c "
-        import os
-        import sys
+        echo "--- Verificando instalación ---"
+        mamba list pcl
         
-        # Buscamos PCLConfig.cmake recursivamente
-        search_root = os.environ['CONDA_PREFIX']
-        print(f'Buscando en: {search_root}')
-        
-        pcl_found = ''
-        for root, dirs, files in os.walk(search_root):
-            if 'PCLConfig.cmake' in files:
-                pcl_found = root.replace(os.sep, '/')
-                break
-        
-        if pcl_found:
-            print(f'PCL encontrado en: {pcl_found}')
-            # Guardamos la variable para el siguiente paso
-            with open(os.environ['GITHUB_ENV'], 'a') as f:
-                f.write(f'PCL_DIR_DETECTED={pcl_found}\n')
-        else:
-            print('ERROR FATAL: No se encontro PCLConfig.cmake')
-            sys.exit(1)
-        "
-
-    # 4. Compilación con Rutas Absolutas
+    # 3. Compilación con Lógica de Rescate
     - name: Compile
       shell: bash -l {0}
       run: |
-        # Generamos el CMakeLists.txt limpio (sin pedir versiones viejas)
+        echo "--- BUSCANDO PCL MANUALMENTE ---"
+        # Usamos el comando nativo 'find' de Unix (disponible en Git Bash) para buscar en todo el entorno
+        PCL_CONFIG=$(find "$CONDA_PREFIX" -name "PCLConfig.cmake" -o -name "pcl-config.cmake" | head -n 1)
+        
+        if [ -z "$PCL_CONFIG" ]; then
+            echo "ADVERTENCIA: No se encontró PCLConfig.cmake. Activando MODO MANUAL."
+            PCL_FOUND_DIR="$CONDA_PREFIX/Library/cmake/pcl-1.12" # Intento de adivinanza
+            # Si falla la búsqueda, definimos las rutas a la fuerza en el CMakeLists
+            MANUAL_PCL_FLAGS="TRUE"
+        else
+            echo "¡ENCONTRADO! $PCL_CONFIG"
+            PCL_FOUND_DIR=$(dirname "$PCL_CONFIG")
+            MANUAL_PCL_FLAGS="FALSE"
+        fi
+
+        # --- GENERAMOS EL CMAKELISTS.TXT ---
         cat > CMakeLists.txt <<EOF
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
         
-        find_package(PCL REQUIRED)
+        # Si no encontramos el config, definimos las librerías a mano
+        if($MANUAL_PCL_FLAGS)
+            message(STATUS "MODO MANUAL: Definiendo rutas de PCL a mano")
+            set(PCL_INCLUDE_DIRS "\$ENV{CONDA_PREFIX}/Library/include/pcl-1.14" "\$ENV{CONDA_PREFIX}/Library/include/eigen3")
+            set(PCL_LIBRARY_DIRS "\$ENV{CONDA_PREFIX}/Library/lib")
+            set(PCL_DEFINITIONS "-D_CRT_SECURE_NO_WARNINGS")
+            # Lista de librerías comunes de PCL
+            file(GLOB PCL_LIBRARIES "\$ENV{CONDA_PREFIX}/Library/lib/pcl_*.lib")
+        else()
+            find_package(PCL REQUIRED)
+        endif()
+
         find_package(OpenCV REQUIRED)
         find_package(GDAL REQUIRED)
         find_package(Boost REQUIRED COMPONENTS filesystem system)
@@ -71,23 +77,23 @@ jobs:
         link_directories(\${PCL_LIBRARY_DIRS})
         
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
+        
+        # Enlazamos todo
         target_link_libraries(odm_orthophoto \${OpenCV_LIBS} \${PCL_LIBRARIES} \${GDAL_LIBRARY} \${Boost_LIBRARIES})
         EOF
-
+        
         mkdir build
         cd build
         
-        echo "Usando PCL en: $PCL_DIR_DETECTED"
-        
-        # Le pasamos a CMake la ruta que encontró Python (-DPCL_DIR=...)
+        # Intentamos compilar apuntando a la carpeta encontrada (si existe)
         cmake .. -G "Visual Studio 16 2019" -A x64 \
-          -DPCL_DIR="$PCL_DIR_DETECTED" \
+          -DPCL_DIR="$PCL_FOUND_DIR" \
           -DCMAKE_PREFIX_PATH="$CONDA_PREFIX/Library" \
           -DCMAKE_BUILD_TYPE=Release
         
         cmake --build . --config Release
         
-    # 5. Subimos el artefacto
+    # 4. Subida del Artefacto
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
