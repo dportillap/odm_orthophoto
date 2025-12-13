@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include <boost/algorithm/string.hpp>
+#include <boost/lexical_cast.hpp>
+#include <boost/filesystem.hpp>
 
 #include "OdmOrthoPhoto.hpp"
 
@@ -948,45 +951,37 @@ void OdmOrthoPhoto::drawTexturedTriangle(const cv::Mat &texture, const pcl::Vert
 template <typename T>
 void OdmOrthoPhoto::renderPixel(int row, int col, float s, float t, const cv::Mat &texture)
 {
-    // The offset of the texture coordinate from its pixel positions.
-    float leftF, topF;
-    // The position of the top left pixel.
-    int left, top;
-    // The distance to the left and right pixel from the texture coordinate.
-    float dl, dt;
-    // The distance to the top and bottom pixel from the texture coordinate.
-    float dr, db;
-    
-    dl = modff(s, &leftF);
-    dr = 1.0f - dl;
-    dt = modff(t, &topF);
-    db = 1.0f - dt;
-    
-    left = static_cast<int>(leftF);
-    top = static_cast<int>(topF);
-    
-    // The interpolated color values.
+    // --- NUEVO MÉTODO: Vecino Más Próximo (Nearest Neighbor) ---
+    // Conserva la integridad radiométrica al no promediar valores.
+
+    // 1. Redondear a la coordenada entera más cercana
+    // s y t son coordenadas flotantes (ej: 10.7, 50.2).
+    // Sumar 0.5 y truncar es la forma estándar de redondear al entero más próximo.
+    int nearest_col = static_cast<int>(s + 0.5f);
+    int nearest_row = static_cast<int>(t + 0.5f);
+
+    // 2. Protección de bordes (Clamping)
+    // Nos aseguramos de no leer fuera de la imagen si el cálculo se pasó por un píxel.
+    if (nearest_col < 0) nearest_col = 0;
+    if (nearest_row < 0) nearest_row = 0;
+    if (nearest_col >= texture.cols) nearest_col = texture.cols - 1;
+    if (nearest_row >= texture.rows) nearest_row = texture.rows - 1;
+
+    // 3. Calcular la posición en la memoria
     size_t idx = static_cast<size_t>(row) * static_cast<size_t>(width) + static_cast<size_t>(col);
-    T *data = reinterpret_cast<T *>(texture.data); // Faster access
+    T *data = reinterpret_cast<T *>(texture.data); 
     int numChannels = texture.channels();
 
+    // 4. Asignación directa
     for (int i = 0; i < numChannels; i++){
-        float value = 0.0f;
-
-        T tl = data[(top) * texture.cols * numChannels + (left) * numChannels + i];
-        T tr = data[(top) * texture.cols * numChannels + (left + 1) * numChannels + i];
-        T bl = data[(top + 1) * texture.cols * numChannels + (left) * numChannels + i];
-        T br = data[(top + 1) * texture.cols * numChannels + (left + 1) * numChannels + i];
-
-        value += static_cast<float>(tl) * dr * db;
-        value += static_cast<float>(tr) * dl * db;
-        value += static_cast<float>(bl) * dr * dt;
-        value += static_cast<float>(br) * dl * dt;
-
-        static_cast<T *>(bands[currentBandIndex + i])[idx] = static_cast<T>(value);
+        // Tomamos el valor DIRECTO del píxel [row, col] de la textura
+        T pixel_val = data[(nearest_row) * texture.cols * numChannels + (nearest_col) * numChannels + i];
+        
+        // Lo guardamos en la banda de salida sin modificarlo
+        static_cast<T *>(bands[currentBandIndex + i])[idx] = static_cast<T>(pixel_val);
     }
 
-    // Increment the alpha band if the pixel was visible for this band
+    // Incrementar la banda alfa (esto se mantiene igual que el original)
     // the final alpha band will be set to 255 if alpha == num bands
     // (all bands have information at this pixel)
     static_cast<T *>(alphaBand)[idx] += static_cast<T>(numChannels);
