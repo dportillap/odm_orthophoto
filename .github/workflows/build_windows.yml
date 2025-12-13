@@ -8,28 +8,32 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 1. Instalamos Miniforge (El nuevo estándar que incluye Mamba)
+    # 1. Instalamos Miniforge
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v3
       with:
-        miniforge-variant: Miniforge3  # <--- CAMBIO AQUÍ (Antes era Mambaforge)
+        miniforge-variant: Miniforge3
         miniforge-version: latest
         activate-environment: odm_build
         python-version: 3.9
         
     # 2. Instalamos las librerías
+    # OJO: Quitamos 'compilers' para evitar que baje MinGW/GCC.
+    # Usaremos el compilador Visual Studio que ya tiene la máquina.
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
-        mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
+        mamba install -c conda-forge cmake ninja gdal opencv pcl boost eigen -y
         
-    # 3. Compilamos
+    # 3. Compilamos con Visual Studio y definimos la ruta de Conda
     - name: Compile
       shell: bash -l {0}
       run: |
         mkdir build
         cd build
-        cmake -G "Ninja" .. -DCMAKE_BUILD_TYPE=Release
+        # Usamos el generador de Visual Studio 2019
+        # Y le pasamos $CONDA_PREFIX para que encuentre PCL y OpenCV
+        cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
         
     # 4. Te entregamos el archivo listo
@@ -37,5 +41,6 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: odm_orthophoto_exe
-        path: build/odm_orthophoto.exe
+        path: build/Release/odm_orthophoto.exe 
+        # Nota: Visual Studio suele guardar el exe en una subcarpeta 'Release'
         compression-level: 0
