@@ -23,16 +23,30 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja gdal opencv pcl boost eigen -y
         
-    # 3. Compilamos
+    # 3. Compilamos con Búsqueda Dinámica
     - name: Compile
       shell: bash -l {0}
       run: |
+        echo "Buscando PCLConfig.cmake..."
+        # Buscamos el archivo y guardamos su carpeta en una variable
+        PCL_CONFIG_PATH=$(find "$CONDA_PREFIX" -name PCLConfig.cmake | head -n 1)
+        PCL_DIR_FOUND=$(dirname "$PCL_CONFIG_PATH")
+        echo "¡PCL encontrado en: $PCL_DIR_FOUND!"
+
+        echo "Buscando OpenCVConfig.cmake..."
+        OPENCV_CONFIG_PATH=$(find "$CONDA_PREFIX" -name OpenCVConfig.cmake | head -n 1)
+        OPENCV_DIR_FOUND=$(dirname "$OPENCV_CONFIG_PATH")
+        echo "¡OpenCV encontrado en: $OPENCV_DIR_FOUND!"
+
         mkdir build
         cd build
         
-        # --- EL CAMBIO CLAVE ESTÁ AQUÍ ABAJO ---
-        # Agregamos "/Library" a la ruta para que encuentre los archivos en Windows
-        cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_PREFIX_PATH="$CONDA_PREFIX/Library" -DCMAKE_BUILD_TYPE=Release
+        # Le pasamos las rutas exactas a CMake para que no se pierda
+        cmake .. -G "Visual Studio 16 2019" -A x64 \
+          -DPCL_DIR="$PCL_DIR_FOUND" \
+          -DOpenCV_DIR="$OPENCV_DIR_FOUND" \
+          -DCMAKE_PREFIX_PATH="$CONDA_PREFIX/Library" \
+          -DCMAKE_BUILD_TYPE=Release
         
         cmake --build . --config Release
         
