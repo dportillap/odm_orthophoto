@@ -23,57 +23,52 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. COMPILACIÓN NUCLEAR (Manual Linking)
+    # 3. DIAGNÓSTICO (Para ver qué está pasando realmente)
+    - name: Debug Directories
+      shell: bash -l {0}
+      run: |
+        echo "--- CONTENIDO DE INCLUDE ---"
+        ls -F "$CONDA_PREFIX/Library/include"
+        echo "----------------------------"
+
+    # 4. COMPILACIÓN TOLERANTE
     - name: Compile
       shell: bash -l {0}
       run: |
-        # Usamos Python para encontrar la versión exacta de la carpeta de PCL (ej: pcl-1.14)
-        # Esto es necesario porque el nombre de la carpeta cambia con la versión.
-        PCL_VERSION_DIR=$(python -c "import os; print([d for d in os.listdir(os.environ['CONDA_PREFIX']+'/Library/include') if d.startswith('pcl-')][0])")
-        echo "Versión de PCL detectada: $PCL_VERSION_DIR"
-        
-        # --- GENERAMOS UN CMAKELISTS.TXT QUE NO USA FIND_PACKAGE ---
+        # --- GENERAMOS EL CMAKELISTS.TXT ---
         cat > CMakeLists.txt <<EOF
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
         
-        # 1. DEFINIMOS RUTAS DE INCLUSIÓN (HEADERS) A LA FUERZA
-        # Usamos variables de entorno que sabemos que existen en Conda
+        # DEFINICIONES GLOBALES
+        add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
+
+        # RUTAS DE INCLUSIÓN (HEADERS)
+        # Incluimos la carpeta raíz 'include'. 
+        # Si PCL está en 'include/pcl-1.12/pcl/..', a veces hay que buscar profundo,
+        # pero probaremos primero con la raíz y Eigen.
         include_directories("\$ENV{CONDA_PREFIX}/Library/include")
         include_directories("\$ENV{CONDA_PREFIX}/Library/include/eigen3")
-        include_directories("\$ENV{CONDA_PREFIX}/Library/include/$PCL_VERSION_DIR")
         include_directories("src")
         
-        # 2. AGARRAMOS LAS LIBRERÍAS (.LIB) FÍSICAMENTE
-        # En lugar de buscar configs, le decimos: "Usa todo lo que encuentres aquí"
-        
-        # PCL Libs
-        file(GLOB PCL_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/pcl_*.lib")
-        
-        # OpenCV Libs
+        # AGARRAMOS LAS LIBRERÍAS (.LIB)
+        # Usamos GLOB_RECURSE para buscar en subcarpetas por si acaso PCL las escondió
+        file(GLOB_RECURSE PCL_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/pcl_*.lib")
         file(GLOB CV_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/opencv_*.lib")
-        
-        # GDAL Lib
-        set(GDAL_LIB "\$ENV{CONDA_PREFIX}/Library/lib/gdal_i.lib")
-        
-        # Boost Libs
         file(GLOB BOOST_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/boost_*.lib")
+        # GDAL suele tener un nombre específico
+        set(GDAL_LIB "\$ENV{CONDA_PREFIX}/Library/lib/gdal_i.lib")
 
-        # 3. DEFINICIONES DE PREPROCESADOR
-        add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX)
-        add_definitions(-DBOOST_USE_WINDOWS_H)
-        
-        # 4. CREAMOS EL EJECUTABLE
+        # Mensaje de depuración para el log
+        message(STATUS "Librerías PCL encontradas: \${PCL_LIBS}")
+
+        # CREAMOS EL EJECUTABLE
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
         
-        # 5. ENLAZAMOS TODO LO QUE ENCONTRAMOS
+        # ENLAZAMOS
         target_link_libraries(odm_orthophoto \${PCL_LIBS} \${CV_LIBS} \${GDAL_LIB} \${BOOST_LIBS})
         EOF
-        
-        # --- VERIFICACIÓN (DEBUG) ---
-        echo "Archivo CMakeLists.txt generado:"
-        cat CMakeLists.txt
         
         # --- COMPILACIÓN ---
         mkdir build
@@ -82,7 +77,7 @@ jobs:
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
         
-    # 4. Subida
+    # 5. Subida
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
