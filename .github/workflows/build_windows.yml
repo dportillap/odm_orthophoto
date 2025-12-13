@@ -18,22 +18,22 @@ jobs:
         python-version: 3.9
         
     # 2. Instalamos las librerías
-    # OJO: Quitamos 'compilers' para evitar que baje MinGW/GCC.
-    # Usaremos el compilador Visual Studio que ya tiene la máquina.
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
         mamba install -c conda-forge cmake ninja gdal opencv pcl boost eigen -y
         
-    # 3. Compilamos con Visual Studio y definimos la ruta de Conda
+    # 3. Compilamos
     - name: Compile
       shell: bash -l {0}
       run: |
         mkdir build
         cd build
-        # Usamos el generador de Visual Studio 2019
-        # Y le pasamos $CONDA_PREFIX para que encuentre PCL y OpenCV
-        cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" -DCMAKE_BUILD_TYPE=Release
+        
+        # --- EL CAMBIO CLAVE ESTÁ AQUÍ ABAJO ---
+        # Agregamos "/Library" a la ruta para que encuentre los archivos en Windows
+        cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_PREFIX_PATH="$CONDA_PREFIX/Library" -DCMAKE_BUILD_TYPE=Release
+        
         cmake --build . --config Release
         
     # 4. Te entregamos el archivo listo
@@ -41,6 +41,5 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: odm_orthophoto_exe
-        path: build/Release/odm_orthophoto.exe 
-        # Nota: Visual Studio suele guardar el exe en una subcarpeta 'Release'
+        path: build/Release/odm_orthophoto.exe
         compression-level: 0
