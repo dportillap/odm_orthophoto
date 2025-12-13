@@ -23,93 +23,66 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. EL SABUESO PYTHON (Búsqueda Inteligente de Rutas)
-    - name: Locate Config Files with Python
-      shell: bash -l {0}
-      run: |
-        python -c "
-        import os
-        import sys
-        
-        # Ruta base de Conda
-        base_path = os.environ['CONDA_PREFIX']
-        print(f'Explorando: {base_path}')
-        
-        # Variables para guardar lo que encontremos
-        paths = {
-            'OpenCV_DIR': None,
-            'PCL_DIR': None,
-            'GDAL_DIR': None
-        }
-        
-        # Recorremos todo el árbol de directorios
-        for root, dirs, files in os.walk(base_path):
-            # Buscamos OpenCV
-            if 'OpenCVConfig.cmake' in files:
-                paths['OpenCV_DIR'] = root.replace(os.sep, '/')
-                print(f'DETECTADO OpenCV en: {paths[\"OpenCV_DIR\"]}')
-            
-            # Buscamos PCL
-            if 'PCLConfig.cmake' in files:
-                paths['PCL_DIR'] = root.replace(os.sep, '/')
-                print(f'DETECTADO PCL en: {paths[\"PCL_DIR\"]}')
-                
-            # Buscamos GDAL (A veces es GDALConfig.cmake o gdal-config.cmake)
-            if 'GDALConfig.cmake' in files:
-                paths['GDAL_DIR'] = root.replace(os.sep, '/')
-                print(f'DETECTADO GDAL en: {paths[\"GDAL_DIR\"]}')
-
-        # Escribimos los resultados en el entorno de GitHub
-        # Si no encontramos algo, apuntamos a la carpeta Library generica como fallback
-        fallback = os.path.join(base_path, 'Library').replace(os.sep, '/')
-        
-        with open(os.environ['GITHUB_ENV'], 'a') as f:
-            f.write(f'DETECTED_OPENCV_DIR={paths[\"OpenCV_DIR\"] if paths[\"OpenCV_DIR\"] else fallback}\n')
-            f.write(f'DETECTED_PCL_DIR={paths[\"PCL_DIR\"] if paths[\"PCL_DIR\"] else fallback}\n')
-            f.write(f'DETECTED_GDAL_DIR={paths[\"GDAL_DIR\"] if paths[\"GDAL_DIR\"] else fallback}\n')
-        "
-
-    # 4. Compilación Blindada
+    # 3. COMPILACIÓN NUCLEAR (Manual Linking)
     - name: Compile
       shell: bash -l {0}
       run: |
-        # Generamos un CMakeLists.txt limpio y tolerante
+        # Usamos Python para encontrar la versión exacta de la carpeta de PCL (ej: pcl-1.14)
+        # Esto es necesario porque el nombre de la carpeta cambia con la versión.
+        PCL_VERSION_DIR=$(python -c "import os; print([d for d in os.listdir(os.environ['CONDA_PREFIX']+'/Library/include') if d.startswith('pcl-')][0])")
+        echo "Versión de PCL detectada: $PCL_VERSION_DIR"
+        
+        # --- GENERAMOS UN CMAKELISTS.TXT QUE NO USA FIND_PACKAGE ---
         cat > CMakeLists.txt <<EOF
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
         
-        # Imprimimos para depuración
-        message(STATUS "Buscando PCL en: $DETECTED_PCL_DIR")
-        message(STATUS "Buscando OpenCV en: $DETECTED_OPENCV_DIR")
+        # 1. DEFINIMOS RUTAS DE INCLUSIÓN (HEADERS) A LA FUERZA
+        # Usamos variables de entorno que sabemos que existen en Conda
+        include_directories("\$ENV{CONDA_PREFIX}/Library/include")
+        include_directories("\$ENV{CONDA_PREFIX}/Library/include/eigen3")
+        include_directories("\$ENV{CONDA_PREFIX}/Library/include/$PCL_VERSION_DIR")
+        include_directories("src")
         
-        find_package(PCL REQUIRED)
-        find_package(OpenCV REQUIRED)
-        find_package(GDAL REQUIRED)
-        find_package(Boost REQUIRED COMPONENTS filesystem system)
+        # 2. AGARRAMOS LAS LIBRERÍAS (.LIB) FÍSICAMENTE
+        # En lugar de buscar configs, le decimos: "Usa todo lo que encuentres aquí"
         
-        include_directories(\${PCL_INCLUDE_DIRS} \${GDAL_INCLUDE_DIRS} \${Boost_INCLUDE_DIRS} \${OpenCV_INCLUDE_DIRS} src)
-        add_definitions(\${PCL_DEFINITIONS})
-        link_directories(\${PCL_LIBRARY_DIRS})
+        # PCL Libs
+        file(GLOB PCL_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/pcl_*.lib")
         
+        # OpenCV Libs
+        file(GLOB CV_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/opencv_*.lib")
+        
+        # GDAL Lib
+        set(GDAL_LIB "\$ENV{CONDA_PREFIX}/Library/lib/gdal_i.lib")
+        
+        # Boost Libs
+        file(GLOB BOOST_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/boost_*.lib")
+
+        # 3. DEFINICIONES DE PREPROCESADOR
+        add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX)
+        add_definitions(-DBOOST_USE_WINDOWS_H)
+        
+        # 4. CREAMOS EL EJECUTABLE
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
-        target_link_libraries(odm_orthophoto \${OpenCV_LIBS} \${PCL_LIBRARIES} \${GDAL_LIBRARY} \${Boost_LIBRARIES})
+        
+        # 5. ENLAZAMOS TODO LO QUE ENCONTRAMOS
+        target_link_libraries(odm_orthophoto \${PCL_LIBS} \${CV_LIBS} \${GDAL_LIB} \${BOOST_LIBS})
         EOF
         
+        # --- VERIFICACIÓN (DEBUG) ---
+        echo "Archivo CMakeLists.txt generado:"
+        cat CMakeLists.txt
+        
+        # --- COMPILACIÓN ---
         mkdir build
         cd build
         
-        # Pasamos las rutas exactas que encontró el Sabueso
-        cmake .. -G "Visual Studio 16 2019" -A x64 \
-          -DPCL_DIR="$DETECTED_PCL_DIR" \
-          -DOpenCV_DIR="$DETECTED_OPENCV_DIR" \
-          -DGDAL_DIR="$DETECTED_GDAL_DIR" \
-          -DCMAKE_PREFIX_PATH="$CONDA_PREFIX/Library" \
-          -DCMAKE_BUILD_TYPE=Release
-        
+        cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
         
-    # 5. Subida
+    # 4. Subida
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
