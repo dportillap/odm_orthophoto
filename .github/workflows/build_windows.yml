@@ -17,27 +17,62 @@ jobs:
         activate-environment: odm_build
         python-version: 3.9
         
-    # 2. Instalamos las librerías
+    # 2. Instalamos las librerías necesarias
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
         mamba install -c conda-forge cmake ninja gdal opencv pcl boost eigen -y
         
-    # 3. Compilamos (Con cirugía previa)
+    # 3. Compilamos (Reescribiendo las reglas del juego)
     - name: Compile
       shell: bash -l {0}
       run: |
-        # --- PASO 1: CIRUGÍA DEL CÓDIGO ---
-        # El código original pide PCL 1.8. Nosotros tenemos una versión nueva.
-        # Usamos 'sed' para borrar el "1.8" del archivo CMakeLists.txt y que acepte la nuestra.
-        sed -i 's/find_package(PCL 1.8 REQUIRED/find_package(PCL REQUIRED/g' CMakeLists.txt
+        # --- PASO 1: REEMPLAZO TOTAL DEL ARCHIVO DE CONFIGURACIÓN ---
+        # Creamos un CMakeLists.txt nuevo que NO pide versiones específicas
+        # y sabe buscar Boost, PCL y GDAL correctamente.
         
+        cat > CMakeLists.txt <<EOF
+        cmake_minimum_required(VERSION 3.5)
+        project(odm_orthophoto)
+        
+        # Configuramos C++ 14 estándar
+        set(CMAKE_CXX_STANDARD 14)
+        set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+        # Buscamos paquetes SIN exigir versión 1.8
+        find_package(PCL REQUIRED)
+        find_package(OpenCV REQUIRED)
+        find_package(GDAL REQUIRED)
+        find_package(Boost REQUIRED COMPONENTS filesystem system)
+
+        # Configuramos rutas de inclusión (Headers)
+        include_directories(\${PCL_INCLUDE_DIRS})
+        include_directories(\${GDAL_INCLUDE_DIRS})
+        include_directories(\${Boost_INCLUDE_DIRS})
+        include_directories(\${OpenCV_INCLUDE_DIRS})
+        include_directories(src)
+        
+        # Definiciones necesarias para PCL en Windows
+        add_definitions(\${PCL_DEFINITIONS})
+        link_directories(\${PCL_LIBRARY_DIRS})
+
+        # Definimos el ejecutable y sus archivos fuente
+        add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
+
+        # Enlazamos las librerías (Linker)
+        target_link_libraries(odm_orthophoto \${OpenCV_LIBS} \${PCL_LIBRARIES} \${GDAL_LIBRARY} \${Boost_LIBRARIES})
+        EOF
+        
+        # Mostramos el archivo creado para verificar (debug)
+        echo "--- Nuevo CMakeLists.txt generado: ---"
+        cat CMakeLists.txt
+        echo "--------------------------------------"
+
         # --- PASO 2: COMPILACIÓN ---
         mkdir build
         cd build
         
-        # Apuntamos directamente a la carpeta 'Library' de Conda donde están los archivos en Windows
-        # Y usamos Visual Studio 2019
+        # Usamos Visual Studio 2019 y apuntamos a la carpeta Library de Conda
         cmake .. -G "Visual Studio 16 2019" -A x64 \
           -DCMAKE_PREFIX_PATH="$CONDA_PREFIX/Library" \
           -DCMAKE_BUILD_TYPE=Release
