@@ -23,50 +23,75 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. DIAGNÓSTICO (Para ver qué está pasando realmente)
-    - name: Debug Directories
+    # 3. EL EXPLORADOR: Encontrar las rutas reales
+    - name: Find Paths with Python
       shell: bash -l {0}
       run: |
-        echo "--- CONTENIDO DE INCLUDE ---"
-        ls -F "$CONDA_PREFIX/Library/include"
-        echo "----------------------------"
+        python -c "
+        import os
+        import glob
+        
+        prefix = os.environ['CONDA_PREFIX'].replace('\\', '/')
+        library_inc = f'{prefix}/Library/include'
+        library_lib = f'{prefix}/Library/lib'
+        
+        print(f'Explorando headers en: {library_inc}')
+        
+        # 1. Buscar carpeta de version de PCL (ej: pcl-1.14)
+        pcl_dirs = [d for d in os.listdir(library_inc) if d.startswith('pcl-') and os.path.isdir(os.path.join(library_inc, d))]
+        if pcl_dirs:
+            pcl_inc_path = f'{library_inc}/{pcl_dirs[0]}'
+            print(f'DETECTADO PCL INCLUDE: {pcl_inc_path}')
+        else:
+            print('ADVERTENCIA: No se vio carpeta pcl-X.X, usando raiz')
+            pcl_inc_path = library_inc
 
-    # 4. COMPILACIÓN TOLERANTE
+        # 2. Buscar ruta de Eigen
+        eigen_path = f'{library_inc}/eigen3'
+        
+        # 3. Guardar en variables de entorno para el siguiente paso
+        with open(os.environ['GITHUB_ENV'], 'a') as f:
+            f.write(f'REAL_PCL_INCLUDE={pcl_inc_path}\n')
+            f.write(f'REAL_EIGEN_INCLUDE={eigen_path}\n')
+            f.write(f'REAL_LIB_PATH={library_lib}\n')
+        "
+
+    # 4. COMPILACIÓN CON RUTAS EXACTAS
     - name: Compile
       shell: bash -l {0}
       run: |
+        echo "Usando PCL Include: $REAL_PCL_INCLUDE"
+        
         # --- GENERAMOS EL CMAKELISTS.TXT ---
         cat > CMakeLists.txt <<EOF
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
         
-        # DEFINICIONES GLOBALES
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
 
-        # RUTAS DE INCLUSIÓN (HEADERS)
-        # Incluimos la carpeta raíz 'include'. 
-        # Si PCL está en 'include/pcl-1.12/pcl/..', a veces hay que buscar profundo,
-        # pero probaremos primero con la raíz y Eigen.
+        # 1. HEADERS (Usamos las variables que encontró Python)
+        include_directories("$REAL_PCL_INCLUDE")
+        include_directories("$REAL_EIGEN_INCLUDE")
         include_directories("\$ENV{CONDA_PREFIX}/Library/include")
-        include_directories("\$ENV{CONDA_PREFIX}/Library/include/eigen3")
         include_directories("src")
         
-        # AGARRAMOS LAS LIBRERÍAS (.LIB)
-        # Usamos GLOB_RECURSE para buscar en subcarpetas por si acaso PCL las escondió
-        file(GLOB_RECURSE PCL_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/pcl_*.lib")
-        file(GLOB CV_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/opencv_*.lib")
-        file(GLOB BOOST_LIBS "\$ENV{CONDA_PREFIX}/Library/lib/boost_*.lib")
-        # GDAL suele tener un nombre específico
-        set(GDAL_LIB "\$ENV{CONDA_PREFIX}/Library/lib/gdal_i.lib")
+        # 2. LIBRERIAS (.LIB)
+        # Apuntamos directo a la carpeta Library/lib
+        link_directories("$REAL_LIB_PATH")
+        
+        # Buscamos los archivos .lib usando GLOB
+        file(GLOB PCL_LIBS "$REAL_LIB_PATH/pcl_*.lib")
+        file(GLOB CV_LIBS "$REAL_LIB_PATH/opencv_*.lib")
+        file(GLOB BOOST_LIBS "$REAL_LIB_PATH/boost_*.lib")
+        set(GDAL_LIB "$REAL_LIB_PATH/gdal_i.lib")
+        
+        # Debug: Imprimir lo que encontramos
+        message(STATUS "Ruta de librerias: $REAL_LIB_PATH")
+        message(STATUS "PCL Libs found: \${PCL_LIBS}")
 
-        # Mensaje de depuración para el log
-        message(STATUS "Librerías PCL encontradas: \${PCL_LIBS}")
-
-        # CREAMOS EL EJECUTABLE
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
         
-        # ENLAZAMOS
         target_link_libraries(odm_orthophoto \${PCL_LIBS} \${CV_LIBS} \${GDAL_LIB} \${BOOST_LIBS})
         EOF
         
