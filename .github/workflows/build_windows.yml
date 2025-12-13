@@ -1,0 +1,40 @@
+name: Build Windows Exe
+on: [push, workflow_dispatch]
+
+jobs:
+  build:
+    runs-on: windows-2019  # Usamos una máquina con Windows y SDK ya instalados
+    
+    steps:
+    - uses: actions/checkout@v2
+    
+    # 1. Instalamos Mamba (Conda) en la nube
+    - name: Setup Mambaforge
+      uses: conda-incubator/setup-miniconda@v2
+      with:
+        miniforge-variant: Mambaforge
+        miniforge-version: latest
+        activate-environment: odm_build
+        python-version: 3.9
+        
+    # 2. Instalamos las librerías (Igual que hiciste tú)
+    - name: Install Dependencies
+      shell: bash -l {0}
+      run: |
+        mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
+        
+    # 3. Compilamos (Aquí SÍ funcionará porque GitHub tiene el Windows SDK)
+    - name: Compile
+      shell: bash -l {0}
+      run: |
+        mkdir build
+        cd build
+        cmake -G "Ninja" .. -DCMAKE_BUILD_TYPE=Release
+        cmake --build . --config Release
+        
+    # 4. Te entregamos el archivo listo
+    - name: Upload Artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: odm_orthophoto_exe
+        path: build/odm_orthophoto.exe
