@@ -23,7 +23,7 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. EL EXPLORADOR: Encontrar las rutas reales
+    # 3. EL EXPLORADOR: Encontrar las rutas reales (CORREGIDO)
     - name: Find Paths with Python
       shell: bash -l {0}
       run: |
@@ -31,14 +31,19 @@ jobs:
         import os
         import glob
         
-        prefix = os.environ['CONDA_PREFIX'].replace('\\', '/')
+        # CORRECCIÓN AQUÍ: Usamos doble backslash para escapar correctamente
+        prefix = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
         library_inc = f'{prefix}/Library/include'
         library_lib = f'{prefix}/Library/lib'
         
         print(f'Explorando headers en: {library_inc}')
         
         # 1. Buscar carpeta de version de PCL (ej: pcl-1.14)
-        pcl_dirs = [d for d in os.listdir(library_inc) if d.startswith('pcl-') and os.path.isdir(os.path.join(library_inc, d))]
+        if os.path.exists(library_inc):
+            pcl_dirs = [d for d in os.listdir(library_inc) if d.startswith('pcl-') and os.path.isdir(os.path.join(library_inc, d))]
+        else:
+            pcl_dirs = []
+
         if pcl_dirs:
             pcl_inc_path = f'{library_inc}/{pcl_dirs[0]}'
             print(f'DETECTADO PCL INCLUDE: {pcl_inc_path}')
@@ -70,23 +75,20 @@ jobs:
         
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
 
-        # 1. HEADERS (Usamos las variables que encontró Python)
+        # 1. HEADERS
         include_directories("$REAL_PCL_INCLUDE")
         include_directories("$REAL_EIGEN_INCLUDE")
         include_directories("\$ENV{CONDA_PREFIX}/Library/include")
         include_directories("src")
         
         # 2. LIBRERIAS (.LIB)
-        # Apuntamos directo a la carpeta Library/lib
         link_directories("$REAL_LIB_PATH")
         
-        # Buscamos los archivos .lib usando GLOB
         file(GLOB PCL_LIBS "$REAL_LIB_PATH/pcl_*.lib")
         file(GLOB CV_LIBS "$REAL_LIB_PATH/opencv_*.lib")
         file(GLOB BOOST_LIBS "$REAL_LIB_PATH/boost_*.lib")
         set(GDAL_LIB "$REAL_LIB_PATH/gdal_i.lib")
         
-        # Debug: Imprimir lo que encontramos
         message(STATUS "Ruta de librerias: $REAL_LIB_PATH")
         message(STATUS "PCL Libs found: \${PCL_LIBS}")
 
