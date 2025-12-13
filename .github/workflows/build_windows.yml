@@ -17,69 +17,77 @@ jobs:
         activate-environment: odm_build
         python-version: 3.9
         
-    # 2. Instalamos las librerías necesarias
+    # 2. Instalamos las librerías
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
         mamba install -c conda-forge cmake ninja gdal opencv pcl boost eigen -y
         
-    # 3. Compilamos (Reescribiendo las reglas del juego)
+    # 3. El Detective Python (Busca las rutas exactas)
+    - name: Locate Libraries
+      shell: bash -l {0}
+      run: |
+        python -c "
+        import os
+        import sys
+        
+        # Buscamos PCLConfig.cmake recursivamente
+        search_root = os.environ['CONDA_PREFIX']
+        print(f'Buscando en: {search_root}')
+        
+        pcl_found = ''
+        for root, dirs, files in os.walk(search_root):
+            if 'PCLConfig.cmake' in files:
+                pcl_found = root.replace(os.sep, '/')
+                break
+        
+        if pcl_found:
+            print(f'PCL encontrado en: {pcl_found}')
+            # Guardamos la variable para el siguiente paso
+            with open(os.environ['GITHUB_ENV'], 'a') as f:
+                f.write(f'PCL_DIR_DETECTED={pcl_found}\n')
+        else:
+            print('ERROR FATAL: No se encontro PCLConfig.cmake')
+            sys.exit(1)
+        "
+
+    # 4. Compilación con Rutas Absolutas
     - name: Compile
       shell: bash -l {0}
       run: |
-        # --- PASO 1: REEMPLAZO TOTAL DEL ARCHIVO DE CONFIGURACIÓN ---
-        # Creamos un CMakeLists.txt nuevo que NO pide versiones específicas
-        # y sabe buscar Boost, PCL y GDAL correctamente.
-        
+        # Generamos el CMakeLists.txt limpio (sin pedir versiones viejas)
         cat > CMakeLists.txt <<EOF
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
-        
-        # Configuramos C++ 14 estándar
         set(CMAKE_CXX_STANDARD 14)
-        set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-        # Buscamos paquetes SIN exigir versión 1.8
+        
         find_package(PCL REQUIRED)
         find_package(OpenCV REQUIRED)
         find_package(GDAL REQUIRED)
         find_package(Boost REQUIRED COMPONENTS filesystem system)
-
-        # Configuramos rutas de inclusión (Headers)
-        include_directories(\${PCL_INCLUDE_DIRS})
-        include_directories(\${GDAL_INCLUDE_DIRS})
-        include_directories(\${Boost_INCLUDE_DIRS})
-        include_directories(\${OpenCV_INCLUDE_DIRS})
-        include_directories(src)
         
-        # Definiciones necesarias para PCL en Windows
+        include_directories(\${PCL_INCLUDE_DIRS} \${GDAL_INCLUDE_DIRS} \${Boost_INCLUDE_DIRS} \${OpenCV_INCLUDE_DIRS} src)
         add_definitions(\${PCL_DEFINITIONS})
         link_directories(\${PCL_LIBRARY_DIRS})
-
-        # Definimos el ejecutable y sus archivos fuente
+        
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
-
-        # Enlazamos las librerías (Linker)
         target_link_libraries(odm_orthophoto \${OpenCV_LIBS} \${PCL_LIBRARIES} \${GDAL_LIBRARY} \${Boost_LIBRARIES})
         EOF
-        
-        # Mostramos el archivo creado para verificar (debug)
-        echo "--- Nuevo CMakeLists.txt generado: ---"
-        cat CMakeLists.txt
-        echo "--------------------------------------"
 
-        # --- PASO 2: COMPILACIÓN ---
         mkdir build
         cd build
         
-        # Usamos Visual Studio 2019 y apuntamos a la carpeta Library de Conda
+        echo "Usando PCL en: $PCL_DIR_DETECTED"
+        
+        # Le pasamos a CMake la ruta que encontró Python (-DPCL_DIR=...)
         cmake .. -G "Visual Studio 16 2019" -A x64 \
+          -DPCL_DIR="$PCL_DIR_DETECTED" \
           -DCMAKE_PREFIX_PATH="$CONDA_PREFIX/Library" \
           -DCMAKE_BUILD_TYPE=Release
         
         cmake --build . --config Release
         
-    # 4. Te entregamos el archivo listo
+    # 5. Subimos el artefacto
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
