@@ -23,7 +23,7 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. EL RASTREADOR GPS (Busca archivos específicos)
+    # 3. EL RASTREADOR GPS (Corregido)
     - name: Pinpoint Files with Python
       shell: bash -l {0}
       run: |
@@ -32,31 +32,26 @@ jobs:
         import glob
         import sys
         
-        # Función para normalizar rutas a formato Unix (que CMake ama)
+        # CORRECCIÓN AQUÍ: Usamos doble backslash para escapar correctamente
         def fix_path(p):
-            return os.path.abspath(p).replace('\\', '/')
+            return os.path.abspath(p).replace('\\\\', '/')
 
         base_dir = os.environ['CONDA_PREFIX']
         print(f'Escaneando base: {base_dir}')
 
         # --- BUSQUEDA DE HEADERS ---
-        # Buscamos 'obj_io.h' para saber dónde rayos está PCL
         pcl_include_root = ''
         for root, dirs, files in os.walk(base_dir):
             if 'obj_io.h' in files:
-                # Encontramos .../include/pcl-1.X/pcl/io/obj_io.h
-                # Necesitamos subir 3 niveles para obtener .../include/pcl-1.X
                 path = fix_path(root)
                 if path.endswith('/pcl/io'):
                      pcl_include_root = path.replace('/pcl/io', '')
                      print(f'FOUND PCL HEADER ROOT: {pcl_include_root}')
                      break
         
-        # Buscamos 'StdVector' para Eigen
         eigen_include_root = ''
         for root, dirs, files in os.walk(base_dir):
             if 'StdVector' in files:
-                # Eigen suele estar en .../eigen3/Eigen/StdVector
                 path = fix_path(root)
                 if path.endswith('/Eigen'):
                     eigen_include_root = path.replace('/Eigen', '')
@@ -64,24 +59,21 @@ jobs:
                     break
 
         if not pcl_include_root:
-            print('ERROR: No pude encontrar obj_io.h')
-            # Fallback desesperado
+            print('ERROR: No pude encontrar obj_io.h, usando fallback')
             pcl_include_root = fix_path(f'{base_dir}/Library/include')
 
         if not eigen_include_root:
-             # Fallback
              eigen_include_root = fix_path(f'{base_dir}/Library/include/eigen3')
 
         # --- BUSQUEDA DE LIBRERIAS ---
-        # Python hace el trabajo sucio de listar los archivos .lib
         lib_dir = fix_path(f'{base_dir}/Library/lib')
         
-        # Usamos glob de Python que es más confiable
+        # Usamos glob para encontrar los archivos .lib reales
         pcl_libs = glob.glob(f'{lib_dir}/pcl_*.lib')
         opencv_libs = glob.glob(f'{lib_dir}/opencv_*.lib')
         boost_libs = glob.glob(f'{lib_dir}/boost_*.lib')
         
-        # Convertimos las listas a strings separados por punto y coma (formato CMake)
+        # Convertimos a strings separados por punto y coma (para CMake)
         pcl_libs_str = ';'.join([fix_path(p) for p in pcl_libs])
         opencv_libs_str = ';'.join([fix_path(p) for p in opencv_libs])
         boost_libs_str = ';'.join([fix_path(p) for p in boost_libs])
@@ -89,7 +81,6 @@ jobs:
 
         print(f'PCL LIBS COUNT: {len(pcl_libs)}')
 
-        # Escribimos al entorno de GitHub
         with open(os.environ['GITHUB_ENV'], 'a') as f:
             f.write(f'DETECTED_PCL_INCLUDE={pcl_include_root}\n')
             f.write(f'DETECTED_EIGEN_INCLUDE={eigen_include_root}\n')
@@ -111,18 +102,17 @@ jobs:
         
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
 
-        # 1. HEADERS DIRECTOS (Sin adivinanzas)
+        # 1. HEADERS DIRECTOS
         include_directories("$DETECTED_PCL_INCLUDE")
         include_directories("$DETECTED_EIGEN_INCLUDE")
         include_directories("\$ENV{CONDA_PREFIX}/Library/include")
         include_directories("src")
         
-        # 2. LIBRERIAS (Pasadas directamente como lista de archivos)
-        # Ya no usamos GLOB aquí, usamos lo que Python encontró
-        
+        # 2. DEFINIR EJECUTABLE
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
         
-        # Enlazamos las variables de entorno directas
+        # 3. ENLAZAR LIBRERIAS
+        # Nota: Pasamos las variables entre comillas para manejar espacios en rutas si los hubiera
         target_link_libraries(odm_orthophoto 
             "$DETECTED_PCL_LIBS" 
             "$DETECTED_CV_LIBS" 
