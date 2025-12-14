@@ -23,103 +23,100 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. EL ARQUITECTO MATEMÁTICO (Calcula las rutas restando el path relativo)
-    - name: Reverse Engineer Paths
+    # 3. REESTRUCTURACIÓN DE CARPETAS (FLATTENING)
+    # Movemos las carpetas anidadas a la superficie para que el compilador las vea fácil.
+    - name: Flatten Includes
       shell: bash -l {0}
       run: |
+        python -c "
+        import os
+        import shutil
+        import glob
+        
+        base_dir = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
+        inc_dir = f'{base_dir}/Library/include'
+        
+        print(f'Reorganizando carpetas en: {inc_dir}')
+        
+        # --- ARREGLAR EIGEN ---
+        # Eigen suele instalarse en 'include/eigen3/Eigen'
+        # Lo queremos en 'include/Eigen'
+        eigen3_dir = f'{inc_dir}/eigen3'
+        target_eigen = f'{inc_dir}/Eigen'
+        
+        if os.path.exists(eigen3_dir) and not os.path.exists(target_eigen):
+            # Buscamos la carpeta 'Eigen' dentro de 'eigen3'
+            inner_eigen = f'{eigen3_dir}/Eigen'
+            if os.path.exists(inner_eigen):
+                print(f'Moviendo {inner_eigen} a {target_eigen}')
+                shutil.move(inner_eigen, target_eigen)
+            else:
+                # A veces eigen3 ya contiene los archivos sueltos, copiamos todo
+                print('Copiando contenido de eigen3 a raiz...')
+                shutil.copytree(eigen3_dir, target_eigen)
+        
+        # --- ARREGLAR PCL ---
+        # PCL suele instalarse en 'include/pcl-1.X/pcl'
+        # Lo queremos en 'include/pcl'
+        # Buscamos cualquier carpeta que empiece por pcl-1.
+        pcl_versioned_dirs = glob.glob(f'{inc_dir}/pcl-*')
+        target_pcl = f'{inc_dir}/pcl'
+        
+        if pcl_versioned_dirs and not os.path.exists(target_pcl):
+            # Tomamos la primera que encontramos (ej: pcl-1.12)
+            src_pcl = f'{pcl_versioned_dirs[0]}/pcl'
+            if os.path.exists(src_pcl):
+                 print(f'Moviendo {src_pcl} a {target_pcl}')
+                 shutil.move(src_pcl, target_pcl)
+        
+        print('--- Estructura final de include (primer nivel) ---')
+        print(os.listdir(inc_dir))
+        "
+
+    # 4. GENERAR CMAKELISTS Y COMPILAR
+    - name: Compile
+      shell: bash -l {0}
+      run: |
+        # Usamos Python para buscar las librerías .lib (eso funcionaba bien)
         python -c "
         import os
         import glob
         
         base_dir = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
         lib_dir = f'{base_dir}/Library/lib'
-        print(f'Escaner iniciado en: {base_dir}')
         
-        detected_includes = set()
-        # Siempre añadimos la base y src por seguridad
-        detected_includes.add(f'{base_dir}/Library/include')
-        detected_includes.add('src')
-        
-        # --- BUSQUEDA INTELIGENTE DE HEADERS ---
-        for root, dirs, files in os.walk(base_dir):
-            root_norm = root.replace('\\\\', '/')
+        # Buscamos librerías
+        all_libs = []
+        all_libs.extend(glob.glob(f'{lib_dir}/pcl_*.lib'))
+        all_libs.extend(glob.glob(f'{lib_dir}/opencv_*.lib'))
+        all_libs.extend(glob.glob(f'{lib_dir}/boost_*.lib'))
+        if os.path.exists(f'{lib_dir}/gdal_i.lib'):
+            all_libs.append(f'{lib_dir}/gdal_i.lib')
             
-            # CASO 1: EIGEN
-            # El codigo pide <Eigen/StdVector>
-            # Buscamos el archivo 'StdVector'
-            if 'StdVector' in files:
-                # Si la carpeta donde lo encontramos termina en '/Eigen',
-                # significa que encontramos .../RutaCorrecta/Eigen/StdVector
-                if root_norm.endswith('/Eigen'):
-                    # Cortamos los ultimos 6 caracteres ('/Eigen') para obtener '.../RutaCorrecta'
-                    include_root = root_norm[:-6]
-                    print(f'¡EIGEN ENCONTRADO! Ruta real: {root_norm}')
-                    print(f' -> Include necesario: {include_root}')
-                    detected_includes.add(include_root)
-
-            # CASO 2: PCL
-            # El codigo pide <pcl/io/obj_io.h>
-            # Buscamos 'obj_io.h'
-            if 'obj_io.h' in files:
-                # Si la carpeta termina en '/pcl/io', encontramos .../RutaCorrecta/pcl/io/obj_io.h
-                if root_norm.endswith('/pcl/io'):
-                    # Cortamos los ultimos 7 caracteres ('/pcl/io')
-                    include_root = root_norm[:-7]
-                    print(f'¡PCL ENCONTRADO! Ruta real: {root_norm}')
-                    print(f' -> Include necesario: {include_root}')
-                    detected_includes.add(include_root)
-
-        # Preparamos el string para CMake
-        includes_str = ' '.join([f'\"{p}\"' for p in detected_includes])
+        # Normalizamos
+        libs_str = ' '.join([f'\"{l.replace(os.sep, forward_slash)}\"' for l in all_libs]).replace('forward_slash', '/')
         
-        # --- BUSQUEDA DE LIBRERÍAS (GLOB) ---
-        # Buscamos recursivamente cualquier .lib de PCL, OpenCV, Boost
-        pcl_libs = []
-        cv_libs = []
-        boost_libs = []
-        gdal_libs = []
-        
-        for root, dirs, files in os.walk(lib_dir):
-            root_norm = root.replace('\\\\', '/')
-            for f in files:
-                if f.endswith('.lib'):
-                    full_path = f'{root_norm}/{f}'
-                    if f.startswith('pcl_') and not f.endswith('d.lib'): pcl_libs.append(full_path)
-                    elif f.startswith('opencv_') and not f.endswith('d.lib'): cv_libs.append(full_path)
-                    elif f.startswith('boost_') and not f.endswith('d.lib'): boost_libs.append(full_path)
-                    elif f == 'gdal_i.lib': gdal_libs.append(full_path)
-
-        all_libs = pcl_libs + cv_libs + boost_libs + gdal_libs
-        all_libs_str = ' '.join([f'\"{l}\"' for l in all_libs])
-        
-        print(f'Total Librerias: {len(all_libs)}')
-
-        # --- GENERAR CMAKELISTS.TXT ---
+        # Escribimos CMakeLists.txt
+        # NOTA: Ahora solo necesitamos incluir 'Library/include' porque ya movimos todo ahí.
         cmake_content = f'''
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
-        
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
         
-        # Inyectamos las rutas calculadas matemáticamente
-        include_directories({includes_str})
+        # INCLUDES SIMPLIFICADOS
+        include_directories(\"{base_dir}/Library/include\")
+        include_directories(\"src\")
         
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
         
-        target_link_libraries(odm_orthophoto {all_libs_str})
+        target_link_libraries(odm_orthophoto {libs_str})
         '''
         
         with open('CMakeLists.txt', 'w') as f:
             f.write(cmake_content)
-            
-        print('--- CMakeLists.txt generado ---')
         "
-
-    # 4. COMPILACIÓN
-    - name: Compile
-      shell: bash -l {0}
-      run: |
+        
         mkdir build
         cd build
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
