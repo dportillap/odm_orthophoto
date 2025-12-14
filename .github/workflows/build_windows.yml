@@ -8,7 +8,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 1. Instalamos Miniforge (MODO SILENCIOSO)
+    # 1. Instalamos Miniforge
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v3
       with:
@@ -23,7 +23,7 @@ jobs:
       run: |
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CIRUGÍA DE CARPETAS COMPLETA
+    # 3. CIRUGÍA DE CARPETAS (Consolidación)
     - name: Surgical Consolidate
       shell: bash -l {0}
       run: |
@@ -53,7 +53,6 @@ jobs:
             if 'StdVector' in files and root.endswith('Eigen'):
                 target = os.path.join(dist_inc, 'Eigen')
                 if not os.path.exists(target):
-                    print(f'Copiando Eigen desde: {root}')
                     shutil.copytree(root, target)
                     eigen_found = True
                     break 
@@ -68,7 +67,6 @@ jobs:
                 if path_parts[-1] == 'pcl':
                     target = os.path.join(dist_inc, 'pcl')
                     if not os.path.exists(target):
-                        print(f'Copiando PCL desde: {root}')
                         shutil.copytree(root, target)
                         break
 
@@ -76,14 +74,12 @@ jobs:
         boost_src = os.path.join(src_root, 'Library/include/boost')
         boost_target = os.path.join(dist_inc, 'boost')
         if os.path.exists(boost_src):
-            print(f'Copiando Boost desde: {boost_src}')
             shutil.copytree(boost_src, boost_target)
 
         # --- 4. OPENCV ---
         cv_src = os.path.join(src_root, 'Library/include/opencv2')
         cv_target = os.path.join(dist_inc, 'opencv2')
         if os.path.exists(cv_src):
-            print(f'Copiando OpenCV desde: {cv_src}')
             shutil.copytree(cv_src, cv_target)
 
         # --- 5. LIBRERÍAS .LIB ---
@@ -96,18 +92,14 @@ jobs:
                             shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
                             count_libs += 1
                         except: pass
-        print(f'-> {count_libs} librerías .lib copiadas.')
-
-        # --- 6. ARCHIVOS SUELTOS (GDAL y otros) ---
-        # Buscamos en Library/include raíz y copiamos todos los .h sueltos
+        
+        # --- 6. ARCHIVOS SUELTOS (GDAL) ---
         root_include = os.path.join(src_root, 'Library/include')
-        print(f'Barriendo archivos sueltos en: {root_include}')
         if os.path.exists(root_include):
             for f in os.listdir(root_include):
                 src_f = os.path.join(root_include, f)
                 if os.path.isfile(src_f) and f.endswith('.h'):
                     shutil.copy2(src_f, os.path.join(dist_inc, f))
-            print('-> Archivos sueltos copiados (incluyendo gdal_priv.h si existe)')
 
         # --- GENERAR CMAKELISTS.TXT ---
         inc_str = dist_inc.replace(os.sep, '/')
@@ -134,7 +126,38 @@ jobs:
             f.write(cmake_txt)
         "
 
-    # 4. COMPILACIÓN
+    # 4. PARCHE DE CÓDIGO (NUEVO - Agrega los includes faltantes)
+    - name: Patch Source Code
+      shell: bash -l {0}
+      run: |
+        python -c "
+        file_path = 'src/OdmOrthoPhoto.cpp'
+        
+        # Leemos el archivo original
+        with open(file_path, 'r') as f:
+            content = f.read()
+        
+        # Definimos las cabeceras que faltan según el error
+        missing_includes = '''
+        #include <boost/algorithm/string.hpp>
+        #include <boost/lexical_cast.hpp>
+        #include <boost/filesystem.hpp>
+        #include <iostream>
+        #include <vector>
+        #include <string>
+        '''
+        
+        # Las insertamos al principio del archivo
+        new_content = missing_includes + '\n' + content
+        
+        # Guardamos el archivo corregido
+        with open(file_path, 'w') as f:
+            f.write(new_content)
+            
+        print('--> Código parchado con includes de Boost.')
+        "
+
+    # 5. COMPILACIÓN
     - name: Compile
       shell: bash -l {0}
       run: |
@@ -143,7 +166,7 @@ jobs:
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
         
-    # 5. Subida
+    # 6. Subida
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
