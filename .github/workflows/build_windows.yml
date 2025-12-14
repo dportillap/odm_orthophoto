@@ -8,7 +8,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 1. Instalamos Miniforge
+    # 1. Instalamos Miniforge (Silencioso)
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v3
       with:
@@ -23,7 +23,7 @@ jobs:
       run: |
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CIRUGÍA DE CARPETAS (Consolidación)
+    # 3. CIRUGÍA Y ENLAZADO (Corrección para GDAL)
     - name: Surgical Consolidate
       shell: bash -l {0}
       run: |
@@ -47,61 +47,77 @@ jobs:
         
         print(f'Buscando tesoros en: {src_root}')
         
-        # --- 1. EIGEN ---
-        eigen_found = False
+        # --- 1. HEADERS (Eigen, PCL, Boost, OpenCV) ---
+        # (Ya sabemos que esto funciona, repetimos la lógica)
+        
+        # Eigen
         for root, dirs, files in os.walk(src_root):
             if 'StdVector' in files and root.endswith('Eigen'):
-                target = os.path.join(dist_inc, 'Eigen')
-                if not os.path.exists(target):
-                    shutil.copytree(root, target)
-                    eigen_found = True
-                    break 
-        if not eigen_found:
-             fb = os.path.join(src_root, 'Library/include/eigen3/Eigen')
-             if os.path.exists(fb): shutil.copytree(fb, os.path.join(dist_inc, 'Eigen'))
+                if not os.path.exists(os.path.join(dist_inc, 'Eigen')):
+                    shutil.copytree(root, os.path.join(dist_inc, 'Eigen'))
+                    break
+        # Fallback Eigen
+        fb_eigen = os.path.join(src_root, 'Library/include/eigen3/Eigen')
+        if not os.path.exists(os.path.join(dist_inc, 'Eigen')) and os.path.exists(fb_eigen):
+            shutil.copytree(fb_eigen, os.path.join(dist_inc, 'Eigen'))
 
-        # --- 2. PCL ---
+        # PCL
         for root, dirs, files in os.walk(src_root):
             if 'pcl_base.h' in files:
                 path_parts = root.replace('\\\\', '/').split('/')
                 if path_parts[-1] == 'pcl':
-                    target = os.path.join(dist_inc, 'pcl')
-                    if not os.path.exists(target):
-                        shutil.copytree(root, target)
+                    if not os.path.exists(os.path.join(dist_inc, 'pcl')):
+                        shutil.copytree(root, os.path.join(dist_inc, 'pcl'))
                         break
 
-        # --- 3. BOOST ---
-        boost_src = os.path.join(src_root, 'Library/include/boost')
-        boost_target = os.path.join(dist_inc, 'boost')
-        if os.path.exists(boost_src):
-            shutil.copytree(boost_src, boost_target)
+        # Boost & OpenCV
+        bst = os.path.join(src_root, 'Library/include/boost')
+        if os.path.exists(bst): shutil.copytree(bst, os.path.join(dist_inc, 'boost'))
+        
+        cv = os.path.join(src_root, 'Library/include/opencv2')
+        if os.path.exists(cv): shutil.copytree(cv, os.path.join(dist_inc, 'opencv2'))
 
-        # --- 4. OPENCV ---
-        cv_src = os.path.join(src_root, 'Library/include/opencv2')
-        cv_target = os.path.join(dist_inc, 'opencv2')
-        if os.path.exists(cv_src):
-            shutil.copytree(cv_src, cv_target)
+        # Archivos sueltos (GDAL headers)
+        root_inc = os.path.join(src_root, 'Library/include')
+        if os.path.exists(root_inc):
+            for f in os.listdir(root_inc):
+                if f.endswith('.h'):
+                    shutil.copy2(os.path.join(root_inc, f), os.path.join(dist_inc, f))
 
-        # --- 5. LIBRERÍAS .LIB ---
+        # --- 2. LIBRERÍAS .LIB (CORRECCIÓN CRÍTICA AQUÍ) ---
         count_libs = 0
+        gdal_libs_found = []
+        
         for root, dirs, files in os.walk(src_root):
             for f in files:
                 if f.endswith('.lib'):
-                    if any(x in f for x in ['pcl_', 'opencv_', 'boost_', 'gdal_i']):
+                    # CAMBIO: Usamos 'gdal' en lugar de 'gdal_i' para ser más permisivos
+                    if any(x in f for x in ['pcl_', 'opencv_', 'boost_', 'gdal']):
                         try:
-                            shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
+                            # Evitamos copiar debug libs si es posible (suelen terminar en d.lib)
+                            # pero ante la duda, copiamos todo.
+                            src = os.path.join(root, f)
+                            dst = os.path.join(dist_lib, f)
+                            shutil.copy2(src, dst)
                             count_libs += 1
+                            
+                            if 'gdal' in f:
+                                gdal_libs_found.append(f)
                         except: pass
         
-        # --- 6. ARCHIVOS SUELTOS (GDAL) ---
-        root_include = os.path.join(src_root, 'Library/include')
-        if os.path.exists(root_include):
-            for f in os.listdir(root_include):
-                src_f = os.path.join(root_include, f)
-                if os.path.isfile(src_f) and f.endswith('.h'):
-                    shutil.copy2(src_f, os.path.join(dist_inc, f))
+        print(f'-> {count_libs} librerías copiadas.')
+        print(f'-> Librerías GDAL encontradas: {gdal_libs_found}')
 
-        # --- GENERAR CMAKELISTS.TXT ---
+        # --- 3. PARCHE DE CÓDIGO (Boost includes) ---
+        # Aseguramos que el código fuente tenga los includes necesarios
+        if os.path.exists('src/OdmOrthoPhoto.cpp'):
+            with open('src/OdmOrthoPhoto.cpp', 'r') as f: content = f.read()
+            if '#include <boost/algorithm/string.hpp>' not in content:
+                includes = '#include <boost/algorithm/string.hpp>\n#include <boost/lexical_cast.hpp>\n#include <boost/filesystem.hpp>\n'
+                with open('src/OdmOrthoPhoto.cpp', 'w') as f: f.write(includes + content)
+                print('-> Código parchado con Boost includes.')
+
+        # --- 4. GENERAR CMAKELISTS.TXT ---
         inc_str = dist_inc.replace(os.sep, '/')
         lib_str = dist_lib.replace(os.sep, '/') + '/*.lib'
         var_start = '$' + '{ALL_LIBS}'
@@ -126,38 +142,7 @@ jobs:
             f.write(cmake_txt)
         "
 
-    # 4. PARCHE DE CÓDIGO (NUEVO - Agrega los includes faltantes)
-    - name: Patch Source Code
-      shell: bash -l {0}
-      run: |
-        python -c "
-        file_path = 'src/OdmOrthoPhoto.cpp'
-        
-        # Leemos el archivo original
-        with open(file_path, 'r') as f:
-            content = f.read()
-        
-        # Definimos las cabeceras que faltan según el error
-        missing_includes = '''
-        #include <boost/algorithm/string.hpp>
-        #include <boost/lexical_cast.hpp>
-        #include <boost/filesystem.hpp>
-        #include <iostream>
-        #include <vector>
-        #include <string>
-        '''
-        
-        # Las insertamos al principio del archivo
-        new_content = missing_includes + '\n' + content
-        
-        # Guardamos el archivo corregido
-        with open(file_path, 'w') as f:
-            f.write(new_content)
-            
-        print('--> Código parchado con includes de Boost.')
-        "
-
-    # 5. COMPILACIÓN
+    # 4. COMPILACIÓN FINAL
     - name: Compile
       shell: bash -l {0}
       run: |
@@ -166,7 +151,7 @@ jobs:
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
         
-    # 6. Subida
+    # 5. Subida
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
