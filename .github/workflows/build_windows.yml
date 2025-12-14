@@ -23,7 +23,7 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CONSOLIDACIÓN DE ACTIVOS (Copia limpia + Generación de Configuración)
+    # 3. CONSOLIDACIÓN Y CONFIGURACIÓN (Versión Anti-GitHub-Parser)
     - name: Consolidate and Configure
       shell: bash -l {0}
       run: |
@@ -34,6 +34,7 @@ jobs:
         
         # --- PARTE A: COPIAR ARCHIVOS ---
         src_root = os.environ['CONDA_PREFIX']
+        # Definimos las rutas de destino locales
         dist_inc = os.path.abspath('MY_LIBS/include')
         dist_lib = os.path.abspath('MY_LIBS/lib')
         
@@ -66,21 +67,28 @@ jobs:
             for f in files:
                 if f.endswith('.lib'):
                     if any(x in f for x in ['pcl_', 'opencv_', 'boost_', 'gdal_i']):
-                        shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
+                        try:
+                            shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
+                        except Exception as e:
+                            pass # Ignorar errores de archivos en uso o duplicados
 
-        # Fallback para Eigen si no se detectó
+        # Fallback para Eigen
         if not eigen_found:
             fallback = os.path.join(src_root, 'Library/include/eigen3/Eigen')
             if os.path.exists(fallback):
-                 shutil.copytree(fallback, os.path.join(dist_inc, 'Eigen'))
+                 if not os.path.exists(os.path.join(dist_inc, 'Eigen')):
+                     shutil.copytree(fallback, os.path.join(dist_inc, 'Eigen'))
         
-        # --- PARTE B: GENERAR CMAKELISTS.TXT ---
-        # Preparamos las rutas para el archivo de texto
+        # --- PARTE B: GENERAR CMAKELISTS.TXT (SIN LLAVES DE GITHUB) ---
+        
+        # Normalizamos las rutas para CMake (slash normal)
         inc_path_str = dist_inc.replace(os.sep, '/')
         lib_glob_str = dist_lib.replace(os.sep, '/') + '/*.lib'
         
-        # Usamos f-string SOLO para las partes que necesitan variables de Python
-        cmake_part_1 = f'''
+        # Construimos el contenido en partes para no confundir a GitHub Actions
+        
+        # 1. Encabezado (f-string normal de Python)
+        cmake_header = f'''
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
@@ -90,17 +98,18 @@ jobs:
         include_directories(\"{inc_path_str}\")
         include_directories(\"src\")
         
-        # Le decimos a CMake que busque todos los .lib en nuestra carpeta
+        # Le decimos a CMake que busque todos los .lib
         file(GLOB ALL_LIBS \"{lib_glob_str}\")
         
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
         '''
         
-        # Concatenamos la parte final como string puro para evitar que GitHub interprete ${{ALL_LIBS}}
-        # Al hacerlo así, GitHub no ve las llaves dobles.
-        cmake_part_2 = '\ntarget_link_libraries(odm_orthophoto ${ALL_LIBS})'
+        # 2. Pie de página (Truco: Concatenamos el signo de dólar separado)
+        # Así GitHub Actions no ve las llaves juntas y no intenta parsear nada.
+        var_start = '$' + '{ALL_LIBS}'
+        cmake_footer = f'target_link_libraries(odm_orthophoto {var_start})'
         
-        final_content = cmake_part_1 + cmake_part_2
+        final_content = cmake_header + '\\n' + cmake_footer
         
         with open('CMakeLists.txt', 'w') as f:
             f.write(final_content)
