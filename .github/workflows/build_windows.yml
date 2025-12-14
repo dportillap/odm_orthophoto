@@ -14,130 +14,113 @@ jobs:
       with:
         miniforge-variant: Miniforge3
         miniforge-version: latest
-        activate-environment: odm_build
+        # IMPORTANTE: No creamos entorno nuevo, usamos 'base'
+        activate-environment: base
         python-version: 3.9
         
-    # 2. Instalamos librerías
+    # 2. Instalamos librerías EN LA BASE (Directo a la vena)
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
-        mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
+        # Instalamos todo en el entorno base actual
+        mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CIRUGÍA DE CARPETAS (Copiar y Reestructurar)
-    - name: Surgical Consolidate
+    # 3. EL RASTREADOR ABSOLUTO (Busca dónde rayos quedaron los archivos)
+    - name: Locate and Configure
       shell: bash -l {0}
       run: |
         python -c "
         import os
-        import shutil
         import glob
         
-        # Origen y Destino
-        src_root = os.environ['CONDA_PREFIX']
-        dist_inc = os.path.abspath('MY_LIBS/include')
-        dist_lib = os.path.abspath('MY_LIBS/lib')
+        # Buscamos en la raíz de la instalación de Conda
+        # En GitHub Actions suele ser C:/Users/runneradmin/miniconda3
+        base_search_dir = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
+        print(f'Escaner iniciado en: {base_search_dir}')
         
-        # Limpiar y crear destino
-        if os.path.exists('MY_LIBS'):
-            shutil.rmtree('MY_LIBS')
-        os.makedirs(dist_inc)
-        os.makedirs(dist_lib)
+        found_includes = set()
+        # Siempre añadimos src
+        found_includes.add('src')
         
-        print(f'Buscando tesoros en: {src_root}')
-        
-        # --- 1. ENCONTRAR Y COPIAR EIGEN ---
-        # El objetivo es tener MY_LIBS/include/Eigen
-        eigen_found = False
-        for root, dirs, files in os.walk(src_root):
-            if 'StdVector' in files:
-                # Encontramos .../algo/Eigen/StdVector
-                if root.endswith('Eigen'):
-                    print(f'Eigen encontrado en: {root}')
-                    # Copiamos la carpeta 'Eigen' entera a 'MY_LIBS/include/Eigen'
-                    target = os.path.join(dist_inc, 'Eigen')
-                    if not os.path.exists(target):
-                        shutil.copytree(root, target)
-                        eigen_found = True
-                        print('-> Eigen copiado exitosamente.')
-                        break # Ya lo tenemos, dejamos de buscar
-
-        if not eigen_found:
-            print('ERROR FATAL: No se encontró Eigen. Intentando ruta hardcoded...')
-            hardcoded = os.path.join(src_root, 'Library/include/eigen3/Eigen')
-            if os.path.exists(hardcoded):
-                shutil.copytree(hardcoded, os.path.join(dist_inc, 'Eigen'))
-                print('-> Eigen copiado desde ruta hardcoded.')
-
-        # --- 2. ENCONTRAR Y COPIAR PCL ---
-        # El objetivo es tener MY_LIBS/include/pcl
         pcl_found = False
-        for root, dirs, files in os.walk(src_root):
-            if 'pcl_base.h' in files:
-                # Encontramos .../algo/pcl/pcl_base.h
-                # La carpeta 'root' es '.../pcl'. Esa es la que queremos copiar.
-                path_parts = root.replace('\\\\', '/').split('/')
-                if path_parts[-1] == 'pcl':
-                    print(f'PCL encontrado en: {root}')
-                    target = os.path.join(dist_inc, 'pcl')
-                    if not os.path.exists(target):
-                        shutil.copytree(root, target)
-                        pcl_found = True
-                        print('-> PCL copiado exitosamente.')
-                        break
-
-        # --- 3. COPIAR LIBRERÍAS .LIB ---
-        count_libs = 0
-        for root, dirs, files in os.walk(src_root):
-            for f in files:
-                if f.endswith('.lib'):
-                    # Filtro de seguridad
-                    if any(x in f for x in ['pcl_', 'opencv_', 'boost_', 'gdal_i']):
-                        try:
-                            shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
-                            count_libs += 1
-                        except: pass
-        print(f'-> {count_libs} librerías .lib copiadas.')
-
-        # --- 4. VERIFICACIÓN (AUTOPSIA) ---
-        print('\n--- VERIFICACIÓN DE MY_LIBS/include ---')
-        if os.path.exists(dist_inc):
-            print(os.listdir(dist_inc))
-            # Verificamos si Eigen está dentro
-            if os.path.exists(os.path.join(dist_inc, 'Eigen')):
-                print('CHECK: Carpeta Eigen existe.')
-            else:
-                print('FAIL: Carpeta Eigen NO existe.')
-        else:
-            print('FAIL: Carpeta include ni siquiera se creó.')
-
-        # --- 5. GENERAR CMAKELISTS.TXT ---
-        inc_str = dist_inc.replace(os.sep, '/')
-        lib_str = dist_lib.replace(os.sep, '/') + '/*.lib'
+        eigen_found = False
         
-        # Truco para las llaves de GitHub
-        var_start = '$' + '{ALL_LIBS}'
+        # --- BUSQUEDA DE HEADERS ---
+        for root, dirs, files in os.walk(base_search_dir):
+            root_norm = root.replace('\\\\', '/')
+            
+            # 1. BUSCAR EIGEN (StdVector)
+            if not eigen_found and 'StdVector' in files:
+                # El código pide <Eigen/StdVector>
+                # Si encontramos .../include/eigen3/Eigen/StdVector
+                if root_norm.endswith('/Eigen'):
+                    # La ruta de inclusión debe ser .../include/eigen3
+                    inc_path = root_norm.rsplit('/Eigen', 1)[0]
+                    print(f'¡EIGEN ENCONTRADO!: {inc_path}')
+                    found_includes.add(inc_path)
+                    eigen_found = True
+
+            # 2. BUSCAR PCL (obj_io.h)
+            if not pcl_found and 'obj_io.h' in files:
+                # El código pide <pcl/io/obj_io.h>
+                # Si encontramos .../include/pcl-1.12/pcl/io/obj_io.h
+                if root_norm.endswith('/pcl/io'):
+                    # La ruta de inclusión debe ser .../include/pcl-1.12
+                    inc_path = root_norm.rsplit('/pcl/io', 1)[0]
+                    print(f'¡PCL ENCONTRADO!: {inc_path}')
+                    found_includes.add(inc_path)
+                    pcl_found = True
+            
+            # Si encontramos ambos, podemos parar de buscar headers (optimización)
+            if eigen_found and pcl_found:
+                break
         
-        cmake_txt = f'''
+        # Fallback de seguridad por si el escáner falla
+        if not eigen_found:
+            print('WARN: No encontré Eigen, adivinando ruta...')
+            found_includes.add(f'{base_search_dir}/Library/include/eigen3')
+        if not pcl_found:
+            print('WARN: No encontré PCL, adivinando ruta...')
+            found_includes.add(f'{base_search_dir}/Library/include')
+
+        # --- BUSQUEDA DE LIBRERIAS (.LIB) ---
+        # Buscamos en todo el directorio Library/lib
+        lib_search_dir = f'{base_search_dir}/Library/lib'
+        
+        pcl_libs = glob.glob(f'{lib_search_dir}/pcl_*.lib')
+        cv_libs = glob.glob(f'{lib_search_dir}/opencv_*.lib')
+        boost_libs = glob.glob(f'{lib_search_dir}/boost_*.lib')
+        gdal_libs = glob.glob(f'{lib_search_dir}/gdal_i.lib')
+        
+        all_libs = pcl_libs + cv_libs + boost_libs + gdal_libs
+        # Normalizamos barras
+        all_libs = [l.replace('\\\\', '/') for l in all_libs]
+        
+        print(f'Total Librerías encontradas: {len(all_libs)}')
+
+        # --- GENERAR CMAKELISTS.TXT ---
+        # Convertimos sets/listas a strings para CMake
+        inc_str = ' '.join([f'\"{p}\"' for p in found_includes])
+        libs_str = ' '.join([f'\"{l}\"' for l in all_libs])
+        
+        cmake_content = f'''
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
         
-        # Incluimos nuestra carpeta verificada
-        include_directories(\"{inc_str}\")
-        include_directories(\"src\")
-        
-        file(GLOB ALL_LIBS \"{lib_str}\")
+        # Rutas calculadas por el Rastreador
+        include_directories({inc_str})
         
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
         
-        target_link_libraries(odm_orthophoto {var_start})
+        target_link_libraries(odm_orthophoto {libs_str})
         '''
         
         with open('CMakeLists.txt', 'w') as f:
-            f.write(cmake_txt)
-        
-        print('--- CMakeLists.txt Listo ---')
+            f.write(cmake_content)
+            
+        print('--- CMakeLists.txt generado ---')
         "
 
     # 4. COMPILACIÓN
