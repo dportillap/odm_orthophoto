@@ -23,8 +23,8 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CONSOLIDACIÓN DE ACTIVOS (Copiar todo a una carpeta local limpia)
-    - name: Consolidate Libraries
+    # 3. CONSOLIDACIÓN DE ACTIVOS (Copia limpia + Generación de Configuración)
+    - name: Consolidate and Configure
       shell: bash -l {0}
       run: |
         python -c "
@@ -32,88 +32,81 @@ jobs:
         import shutil
         import glob
         
-        # Origen (Caos de Conda)
+        # --- PARTE A: COPIAR ARCHIVOS ---
         src_root = os.environ['CONDA_PREFIX']
-        
-        # Destino (Nuestra carpeta limpia)
         dist_inc = os.path.abspath('MY_LIBS/include')
         dist_lib = os.path.abspath('MY_LIBS/lib')
         
-        # Crear carpetas
         os.makedirs(dist_inc, exist_ok=True)
         os.makedirs(dist_lib, exist_ok=True)
         
-        print(f'Consolidando librerías desde {src_root} hacia {dist_inc}...')
+        print(f'Consolidando librerías en: {dist_inc}')
         
-        # --- BUSQUEDA Y COPIA DE HEADERS ---
         eigen_found = False
-        pcl_found = False
         
         for root, dirs, files in os.walk(src_root):
-            # A. ARREGLAR EIGEN
-            # Buscamos la carpeta que contiene 'StdVector'
+            # 1. COPIAR EIGEN (Buscamos carpeta que tenga StdVector)
             if 'StdVector' in files:
-                # Si estamos en .../eigen3/Eigen, queremos copiar 'Eigen' a dist_inc/Eigen
                 if root.endswith('Eigen'):
-                    print(f'Copiando Eigen desde: {root}')
-                    # Copiamos la carpeta 'Eigen' completa
                     target = os.path.join(dist_inc, 'Eigen')
                     if not os.path.exists(target):
+                        print(f'Copiando Eigen desde: {root}')
                         shutil.copytree(root, target)
                         eigen_found = True
 
-            # B. ARREGLAR PCL
-            # Buscamos la carpeta que contiene 'pcl_base.h' o 'obj_io.h'
-            # PCL suele estar en .../include/pcl-1.X/pcl. Queremos copiar 'pcl' a dist_inc/pcl
+            # 2. COPIAR PCL (Buscamos carpeta raiz 'pcl')
             if 'pcl_base.h' in files:
-                if root.endswith('pcl'): # Aseguramos que sea la carpeta raíz 'pcl'
-                    print(f'Copiando PCL desde: {root}')
+                if root.endswith('pcl'):
                     target = os.path.join(dist_inc, 'pcl')
                     if not os.path.exists(target):
+                        print(f'Copiando PCL desde: {root}')
                         shutil.copytree(root, target)
-                        pcl_found = True
             
-            # C. COPIAR LIBRERÍAS (.LIB)
+            # 3. COPIAR LIBRERÍAS .LIB
             for f in files:
                 if f.endswith('.lib'):
-                    # Filtramos solo las que nos interesan
                     if any(x in f for x in ['pcl_', 'opencv_', 'boost_', 'gdal_i']):
-                        src_file = os.path.join(root, f)
-                        dst_file = os.path.join(dist_lib, f)
-                        shutil.copy2(src_file, dst_file)
+                        shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
 
+        # Fallback para Eigen si no se detectó
         if not eigen_found:
-            print('ERROR: No se encontró Eigen para copiar. Intentando fallback...')
-            # Fallback ciego
             fallback = os.path.join(src_root, 'Library/include/eigen3/Eigen')
             if os.path.exists(fallback):
                  shutil.copytree(fallback, os.path.join(dist_inc, 'Eigen'))
-
-        print('--- Contenido de MY_LIBS/include ---')
-        print(os.listdir(dist_inc))
         
-        # --- GENERAR CMAKELISTS.TXT ---
-        # Ahora es muy fácil porque sabemos EXACTAMENTE dónde está todo
-        cmake_content = f'''
+        # --- PARTE B: GENERAR CMAKELISTS.TXT ---
+        # Preparamos las rutas para el archivo de texto
+        inc_path_str = dist_inc.replace(os.sep, '/')
+        lib_glob_str = dist_lib.replace(os.sep, '/') + '/*.lib'
+        
+        # Usamos f-string SOLO para las partes que necesitan variables de Python
+        cmake_part_1 = f'''
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
         
-        # Solo necesitamos incluir NUESTRA carpeta
-        include_directories(\"{dist_inc.replace(os.sep, '/')}\")
+        # Incluimos nuestra carpeta consolidada
+        include_directories(\"{inc_path_str}\")
         include_directories(\"src\")
         
-        # Agarrar todas las libs que copiamos
-        file(GLOB ALL_LIBS \"{dist_lib.replace(os.sep, '/')}/*.lib\")
+        # Le decimos a CMake que busque todos los .lib en nuestra carpeta
+        file(GLOB ALL_LIBS \"{lib_glob_str}\")
         
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
-        
-        target_link_libraries(odm_orthophoto \${{ALL_LIBS}})
         '''
         
+        # Concatenamos la parte final como string puro para evitar que GitHub interprete ${{ALL_LIBS}}
+        # Al hacerlo así, GitHub no ve las llaves dobles.
+        cmake_part_2 = '\ntarget_link_libraries(odm_orthophoto ${ALL_LIBS})'
+        
+        final_content = cmake_part_1 + cmake_part_2
+        
         with open('CMakeLists.txt', 'w') as f:
-            f.write(cmake_content)
+            f.write(final_content)
+            
+        print('--- CMakeLists.txt generado ---')
+        print(final_content)
         "
 
     # 4. COMPILACIÓN
