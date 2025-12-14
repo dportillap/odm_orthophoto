@@ -23,7 +23,7 @@ jobs:
       run: |
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CONSOLIDACIÓN (Compilación)
+    # 3. CONSOLIDACIÓN
     - name: Surgical Consolidate
       shell: bash -l {0}
       run: |
@@ -97,8 +97,8 @@ jobs:
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
 
-    # 5. EMPAQUETADO DE DLLs (EL COLECTOR MASIVO)
-    - name: Deep Bundle DLLs
+    # 5. EMPAQUETADO DE DLLs (MODO ASPIRADORA - SIN FILTROS)
+    - name: Vacuum All DLLs
       shell: bash -l {0}
       run: |
         python -c "
@@ -108,39 +108,38 @@ jobs:
         if 'CONDA_PREFIX' in os.environ: src_root = os.environ['CONDA_PREFIX']
         else: src_root = 'C:/Users/runneradmin/miniconda3'
             
+        # Nos centramos en Library/bin que es donde viven las DLLs en Windows
+        bin_root = os.path.join(src_root, 'Library', 'bin')
         exe_dir = 'build/Release'
-        print(f'Buscando DLLs recursivamente en: {src_root}')
         
-        # LISTA EXTENDIDA PREVENTIVA (V6)
-        dll_keywords = [
-            'pcl', 'boost', 'gdal', 'opencv', 'tbb', 
-            'zlib', 'jpeg', 'tiff', 'geos', 'proj',
-            'archive', 'bz2', 'lzma', 'iconv', 'zstd', 'xml',
-            'crypto', 'ssl', 'curl',
-            'jasper', 'hdf', 'netcdf', 'sqlite', 'spatialite', 'freexl', 'webp' # <-- NUEVOS INVITADOS
-        ]
+        print(f'Aspirando TODAS las DLLs de: {bin_root}')
         
         count = 0
         copied_files = set()
         
-        for root, dirs, files in os.walk(src_root):
+        # Recorremos Library/bin y copiamos TODO lo que sea .dll
+        for root, dirs, files in os.walk(bin_root):
             for f in files:
-                if f.endswith('.dll'):
-                    if any(k in f.lower() for k in dll_keywords):
+                if f.lower().endswith('.dll'):
+                    # Filtramos solo las DLLs de sistema muy obvias para ahorrar algo de espacio
+                    # pero dejamos pasar casi todo.
+                    if not f.lower().startswith('api-ms-win'): 
                         if f not in copied_files:
                             try:
                                 shutil.copy2(os.path.join(root, f), exe_dir)
-                                print(f'DLL encontrada y copiada: {f}')
                                 copied_files.add(f)
                                 count += 1
                             except: pass
+                            
         print(f'--> Total DLLs empaquetadas: {count}')
+        # Listamos algunas para verificar
+        print(f'Ejemplos copiados: {list(copied_files)[:10]}')
         "
         
     # 6. Subida
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: odm_orthophoto_full_pack_v6
+        name: odm_orthophoto_vacuum_pack
         path: build/Release/
         compression-level: 0
