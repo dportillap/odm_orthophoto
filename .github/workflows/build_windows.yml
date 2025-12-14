@@ -8,21 +8,20 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 1. Instalamos Miniforge (SIN FORZAR VERSIÓN DE PYTHON)
+    # 1. Instalamos Miniforge (CORREGIDO)
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v3
       with:
         miniforge-variant: Miniforge3
         miniforge-version: latest
         activate-environment: base
-        # python-version: 3.9  <-- ELIMINADO PARA EVITAR CONFLICTOS
+        python-version: default  # <--- ESTA ES LA CLAVE: No toques la versión de Python
         
     # 2. Instalamos librerías EN LA BASE (Directo a la vena)
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
         # Instalamos todo en el entorno base actual
-        # Esto garantiza que los archivos estén en una ruta conocida
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
     # 3. EL RASTREADOR ABSOLUTO (Busca dónde quedaron los archivos)
@@ -52,9 +51,7 @@ jobs:
             # 1. BUSCAR EIGEN (StdVector)
             if not eigen_found and 'StdVector' in files:
                 # El código pide <Eigen/StdVector>
-                # Si encontramos .../include/eigen3/Eigen/StdVector
                 if root_norm.endswith('/Eigen'):
-                    # La ruta de inclusión debe ser .../include/eigen3
                     inc_path = root_norm.rsplit('/Eigen', 1)[0]
                     print(f'¡EIGEN ENCONTRADO!: {inc_path}')
                     found_includes.add(inc_path)
@@ -63,15 +60,12 @@ jobs:
             # 2. BUSCAR PCL (obj_io.h)
             if not pcl_found and 'obj_io.h' in files:
                 # El código pide <pcl/io/obj_io.h>
-                # Si encontramos .../include/pcl-1.12/pcl/io/obj_io.h
                 if root_norm.endswith('/pcl/io'):
-                    # La ruta de inclusión debe ser .../include/pcl-1.12
                     inc_path = root_norm.rsplit('/pcl/io', 1)[0]
                     print(f'¡PCL ENCONTRADO!: {inc_path}')
                     found_includes.add(inc_path)
                     pcl_found = True
             
-            # Si encontramos ambos, podemos parar de buscar headers
             if eigen_found and pcl_found:
                 break
         
@@ -84,7 +78,6 @@ jobs:
             found_includes.add(f'{base_search_dir}/Library/include')
 
         # --- BUSQUEDA DE LIBRERIAS (.LIB) ---
-        # Buscamos recursivamente porque a veces no están en Library/lib
         pcl_libs = []
         cv_libs = []
         boost_libs = []
@@ -107,16 +100,12 @@ jobs:
                          gdal_libs.append(full_path)
         
         all_libs = pcl_libs + cv_libs + boost_libs + gdal_libs
-        
-        # Eliminar duplicados si los hubiera
         all_libs = list(set(all_libs))
         
         print(f'Total Librerías encontradas: {len(all_libs)}')
 
         # --- GENERAR CMAKELISTS.TXT ---
-        # Convertimos sets/listas a strings para CMake
         inc_str = ' '.join([f'\"{p}\"' for p in found_includes])
-        # Usamos replace para asegurar slash normal en Windows
         libs_str = ' '.join([f'\"{l}\"' for l in all_libs])
         
         cmake_content = f'''
