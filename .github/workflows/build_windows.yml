@@ -14,18 +14,16 @@ jobs:
       with:
         miniforge-variant: Miniforge3
         miniforge-version: latest
-        # CLAVE: Dejamos esto vacío para que la acción no intente actualizar 'base' y falle
         activate-environment: ""
         auto-activate-base: true
         
-    # 2. Instalamos librerías (MANUALMENTE)
+    # 2. Instalamos librerías
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
-        # Ahora que nadie nos molesta, instalamos en base
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CIRUGÍA DE CARPETAS (Consolidación en MY_LIBS)
+    # 3. CIRUGÍA DE CARPETAS (Boost + OpenCV + PCL + Eigen)
     - name: Surgical Consolidate
       shell: bash -l {0}
       run: |
@@ -35,12 +33,9 @@ jobs:
         import glob
         
         # Origen y Destino
-        # En GitHub Actions Windows, la raíz suele estar en C:/Users/runneradmin/miniconda3
-        # Si CONDA_PREFIX no está definido por no activar env, lo deducimos
         if 'CONDA_PREFIX' in os.environ:
             src_root = os.environ['CONDA_PREFIX']
         else:
-            # Fallback típico en GitHub Actions
             src_root = 'C:/Users/runneradmin/miniconda3'
             
         dist_inc = os.path.abspath('MY_LIBS/include')
@@ -54,43 +49,67 @@ jobs:
         
         print(f'Buscando tesoros en: {src_root}')
         
-        # --- 1. ENCONTRAR Y COPIAR EIGEN ---
-        # El objetivo es tener MY_LIBS/include/Eigen
+        # --- 1. EIGEN ---
         eigen_found = False
         for root, dirs, files in os.walk(src_root):
-            if 'StdVector' in files:
-                # Encontramos .../algo/Eigen/StdVector
-                if root.endswith('Eigen'):
-                    print(f'Eigen encontrado en: {root}')
-                    target = os.path.join(dist_inc, 'Eigen')
-                    if not os.path.exists(target):
-                        shutil.copytree(root, target)
-                        eigen_found = True
-                        print('-> Eigen copiado exitosamente.')
-                        break 
-
+            if 'StdVector' in files and root.endswith('Eigen'):
+                target = os.path.join(dist_inc, 'Eigen')
+                if not os.path.exists(target):
+                    print(f'Copiando Eigen desde: {root}')
+                    shutil.copytree(root, target)
+                    eigen_found = True
+                    break 
         if not eigen_found:
-            print('ERROR: No se encontró Eigen. Intentando ruta hardcoded...')
-            hardcoded = os.path.join(src_root, 'Library/include/eigen3/Eigen')
-            if os.path.exists(hardcoded):
-                shutil.copytree(hardcoded, os.path.join(dist_inc, 'Eigen'))
+             # Fallback típico
+             fb = os.path.join(src_root, 'Library/include/eigen3/Eigen')
+             if os.path.exists(fb): shutil.copytree(fb, os.path.join(dist_inc, 'Eigen'))
 
-        # --- 2. ENCONTRAR Y COPIAR PCL ---
-        # El objetivo es tener MY_LIBS/include/pcl
-        pcl_found = False
+        # --- 2. PCL ---
         for root, dirs, files in os.walk(src_root):
             if 'pcl_base.h' in files:
                 path_parts = root.replace('\\\\', '/').split('/')
                 if path_parts[-1] == 'pcl':
-                    print(f'PCL encontrado en: {root}')
                     target = os.path.join(dist_inc, 'pcl')
                     if not os.path.exists(target):
+                        print(f'Copiando PCL desde: {root}')
                         shutil.copytree(root, target)
-                        pcl_found = True
-                        print('-> PCL copiado exitosamente.')
                         break
 
-        # --- 3. COPIAR LIBRERÍAS .LIB ---
+        # --- 3. BOOST (NUEVO) ---
+        # Boost suele estar en Library/include/boost
+        boost_src = os.path.join(src_root, 'Library/include/boost')
+        boost_target = os.path.join(dist_inc, 'boost')
+        
+        if os.path.exists(boost_src):
+            print(f'Copiando Boost desde: {boost_src}')
+            shutil.copytree(boost_src, boost_target)
+        else:
+            print('WARN: No encontré Boost en ruta estándar. Buscando...')
+            for root, dirs, files in os.walk(src_root):
+                if 'version.hpp' in files and root.endswith('boost'):
+                     if not os.path.exists(boost_target):
+                         print(f'Boost encontrado en: {root}')
+                         shutil.copytree(root, boost_target)
+                         break
+
+        # --- 4. OPENCV (NUEVO - Preventivo) ---
+        # OpenCV suele estar en Library/include/opencv2
+        cv_src = os.path.join(src_root, 'Library/include/opencv2')
+        cv_target = os.path.join(dist_inc, 'opencv2')
+        
+        if os.path.exists(cv_src):
+            print(f'Copiando OpenCV desde: {cv_src}')
+            shutil.copytree(cv_src, cv_target)
+        else:
+             # Búsqueda manual si falla la estándar
+             for root, dirs, files in os.walk(src_root):
+                if 'core.hpp' in files and root.endswith('opencv2'): # core.hpp es clave en opencv2
+                     if not os.path.exists(cv_target):
+                         print(f'OpenCV encontrado en: {root}')
+                         shutil.copytree(root, cv_target)
+                         break
+
+        # --- 5. LIBRERÍAS .LIB ---
         count_libs = 0
         for root, dirs, files in os.walk(src_root):
             for f in files:
@@ -102,16 +121,14 @@ jobs:
                         except: pass
         print(f'-> {count_libs} librerías .lib copiadas.')
 
-        # --- 4. VERIFICACIÓN ---
-        print('\n--- VERIFICACIÓN DE MY_LIBS/include ---')
+        # --- VERIFICACIÓN ---
+        print('\n--- MY_LIBS/include contiene: ---')
         if os.path.exists(dist_inc):
             print(os.listdir(dist_inc))
 
-        # --- 5. GENERAR CMAKELISTS.TXT ---
+        # --- GENERAR CMAKELISTS.TXT ---
         inc_str = dist_inc.replace(os.sep, '/')
         lib_str = dist_lib.replace(os.sep, '/') + '/*.lib'
-        
-        # Truco para las llaves de GitHub
         var_start = '$' + '{ALL_LIBS}'
         
         cmake_txt = f'''
@@ -120,7 +137,7 @@ jobs:
         set(CMAKE_CXX_STANDARD 14)
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
         
-        # Incluimos nuestra carpeta verificada
+        # Incluimos nuestra carpeta consolidada
         include_directories(\"{inc_str}\")
         include_directories(\"src\")
         
@@ -133,8 +150,6 @@ jobs:
         
         with open('CMakeLists.txt', 'w') as f:
             f.write(cmake_txt)
-        
-        print('--- CMakeLists.txt Listo ---')
         "
 
     # 4. COMPILACIÓN
