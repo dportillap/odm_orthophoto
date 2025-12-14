@@ -8,19 +8,21 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 1. Instalamos Miniforge (SIN línea de python-version)
+    # 1. Instalamos Miniforge (MODO SILENCIOSO)
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v3
       with:
         miniforge-variant: Miniforge3
         miniforge-version: latest
-        activate-environment: base
-        # Eliminamos la línea python-version para que use la del sistema
+        # CLAVE: Dejamos esto vacío para que la acción no intente actualizar 'base' y falle
+        activate-environment: ""
+        auto-activate-base: true
         
-    # 2. Instalamos librerías EN LA BASE
+    # 2. Instalamos librerías (MANUALMENTE)
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
+        # Ahora que nadie nos molesta, instalamos en base
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
     # 3. CIRUGÍA DE CARPETAS (Consolidación en MY_LIBS)
@@ -33,7 +35,14 @@ jobs:
         import glob
         
         # Origen y Destino
-        src_root = os.environ['CONDA_PREFIX']
+        # En GitHub Actions Windows, la raíz suele estar en C:/Users/runneradmin/miniconda3
+        # Si CONDA_PREFIX no está definido por no activar env, lo deducimos
+        if 'CONDA_PREFIX' in os.environ:
+            src_root = os.environ['CONDA_PREFIX']
+        else:
+            # Fallback típico en GitHub Actions
+            src_root = 'C:/Users/runneradmin/miniconda3'
+            
         dist_inc = os.path.abspath('MY_LIBS/include')
         dist_lib = os.path.abspath('MY_LIBS/lib')
         
@@ -62,7 +71,6 @@ jobs:
 
         if not eigen_found:
             print('ERROR: No se encontró Eigen. Intentando ruta hardcoded...')
-            # Intento desesperado en carpeta Library
             hardcoded = os.path.join(src_root, 'Library/include/eigen3/Eigen')
             if os.path.exists(hardcoded):
                 shutil.copytree(hardcoded, os.path.join(dist_inc, 'Eigen'))
@@ -72,7 +80,6 @@ jobs:
         pcl_found = False
         for root, dirs, files in os.walk(src_root):
             if 'pcl_base.h' in files:
-                # Verificamos que la carpeta padre sea 'pcl'
                 path_parts = root.replace('\\\\', '/').split('/')
                 if path_parts[-1] == 'pcl':
                     print(f'PCL encontrado en: {root}')
@@ -104,8 +111,7 @@ jobs:
         inc_str = dist_inc.replace(os.sep, '/')
         lib_str = dist_lib.replace(os.sep, '/') + '/*.lib'
         
-        # Truco para las llaves de GitHub:
-        # Separamos el signo $ de las llaves
+        # Truco para las llaves de GitHub
         var_start = '$' + '{ALL_LIBS}'
         
         cmake_txt = f'''
