@@ -97,7 +97,7 @@ jobs:
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
 
-    # 5. EMPAQUETADO DE DLLs (INCLUYE CRYPTO/SSL)
+    # 5. EMPAQUETADO DE DLLs (EL COLECTOR MASIVO)
     - name: Deep Bundle DLLs
       shell: bash -l {0}
       run: |
@@ -111,12 +111,13 @@ jobs:
         exe_dir = 'build/Release'
         print(f'Buscando DLLs recursivamente en: {src_root}')
         
-        # LISTA EXTENDIDA PARA CUBRIR DEPENDENCIAS DE OPENSSL
+        # LISTA EXTENDIDA PREVENTIVA (V6)
         dll_keywords = [
             'pcl', 'boost', 'gdal', 'opencv', 'tbb', 
             'zlib', 'jpeg', 'tiff', 'geos', 'proj',
             'archive', 'bz2', 'lzma', 'iconv', 'zstd', 'xml',
-            'crypto', 'ssl', 'curl'  # <-- LOS NUEVOS INVITADOS
+            'crypto', 'ssl', 'curl',
+            'jasper', 'hdf', 'netcdf', 'sqlite', 'spatialite', 'freexl', 'webp' # <-- NUEVOS INVITADOS
         ]
         
         count = 0
@@ -140,6 +141,6 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: odm_orthophoto_full_pack_v5
+        name: odm_orthophoto_full_pack_v6
         path: build/Release/
         compression-level: 0
