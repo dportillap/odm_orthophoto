@@ -17,96 +17,105 @@ jobs:
         activate-environment: odm_build
         python-version: 3.9
         
-    # 2. Instalamos librerías
+    # 2. Instalamos librerías (FORZANDO LA RUTA)
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
-        mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
+        # Usamos -p $CONDA_PREFIX para obligarlo a instalar AQUI
+        mamba install -p "$CONDA_PREFIX" -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. REESTRUCTURACIÓN DE CARPETAS (FLATTENING)
-    # Movemos las carpetas anidadas a la superficie para que el compilador las vea fácil.
-    - name: Flatten Includes
+    # 3. EL RADAR DE LARGO ALCANCE (Busca en todo el disco de Conda)
+    - name: Deep Search and Config
       shell: bash -l {0}
       run: |
         python -c "
         import os
-        import shutil
         import glob
         
-        base_dir = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
-        inc_dir = f'{base_dir}/Library/include'
+        # Obtenemos la raíz de toda la instalación de Miniconda (dos niveles arriba del env)
+        env_root = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
+        # Si estamos en .../envs/odm_build, subir 2 niveles nos lleva a .../miniconda3
+        conda_root = os.path.dirname(os.path.dirname(env_root))
         
-        print(f'Reorganizando carpetas en: {inc_dir}')
+        print(f'Buscando en TODO Conda: {conda_root}')
         
-        # --- ARREGLAR EIGEN ---
-        # Eigen suele instalarse en 'include/eigen3/Eigen'
-        # Lo queremos en 'include/Eigen'
-        eigen3_dir = f'{inc_dir}/eigen3'
-        target_eigen = f'{inc_dir}/Eigen'
+        # Variables para guardar los tesoros encontrados
+        found_eigen_include = None
+        found_pcl_include = None
+        found_libs_dir = None # Directorio donde haya más libs
         
-        if os.path.exists(eigen3_dir) and not os.path.exists(target_eigen):
-            # Buscamos la carpeta 'Eigen' dentro de 'eigen3'
-            inner_eigen = f'{eigen3_dir}/Eigen'
-            if os.path.exists(inner_eigen):
-                print(f'Moviendo {inner_eigen} a {target_eigen}')
-                shutil.move(inner_eigen, target_eigen)
-            else:
-                # A veces eigen3 ya contiene los archivos sueltos, copiamos todo
-                print('Copiando contenido de eigen3 a raiz...')
-                shutil.copytree(eigen3_dir, target_eigen)
+        libs_pcl = []
+        libs_cv = []
+        libs_boost = []
+        lib_gdal = None
         
-        # --- ARREGLAR PCL ---
-        # PCL suele instalarse en 'include/pcl-1.X/pcl'
-        # Lo queremos en 'include/pcl'
-        # Buscamos cualquier carpeta que empiece por pcl-1.
-        pcl_versioned_dirs = glob.glob(f'{inc_dir}/pcl-*')
-        target_pcl = f'{inc_dir}/pcl'
-        
-        if pcl_versioned_dirs and not os.path.exists(target_pcl):
-            # Tomamos la primera que encontramos (ej: pcl-1.12)
-            src_pcl = f'{pcl_versioned_dirs[0]}/pcl'
-            if os.path.exists(src_pcl):
-                 print(f'Moviendo {src_pcl} a {target_pcl}')
-                 shutil.move(src_pcl, target_pcl)
-        
-        print('--- Estructura final de include (primer nivel) ---')
-        print(os.listdir(inc_dir))
-        "
-
-    # 4. GENERAR CMAKELISTS Y COMPILAR
-    - name: Compile
-      shell: bash -l {0}
-      run: |
-        # Usamos Python para buscar las librerías .lib (eso funcionaba bien)
-        python -c "
-        import os
-        import glob
-        
-        base_dir = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
-        lib_dir = f'{base_dir}/Library/lib'
-        
-        # Buscamos librerías
-        all_libs = []
-        all_libs.extend(glob.glob(f'{lib_dir}/pcl_*.lib'))
-        all_libs.extend(glob.glob(f'{lib_dir}/opencv_*.lib'))
-        all_libs.extend(glob.glob(f'{lib_dir}/boost_*.lib'))
-        if os.path.exists(f'{lib_dir}/gdal_i.lib'):
-            all_libs.append(f'{lib_dir}/gdal_i.lib')
+        # --- RECORRIDO RECURSIVO MASIVO ---
+        # Esto puede tardar unos segundos pero encontrará los archivos si existen en el disco
+        for root, dirs, files in os.walk(conda_root):
+            root_norm = root.replace('\\\\', '/')
             
-        # Normalizamos
-        libs_str = ' '.join([f'\"{l.replace(os.sep, forward_slash)}\"' for l in all_libs]).replace('forward_slash', '/')
+            # A. BUSCAR HEADERS
+            # Eigen
+            if not found_eigen_include and 'StdVector' in files:
+                if root_norm.endswith('/Eigen'):
+                    found_eigen_include = root_norm.rsplit('/Eigen', 1)[0]
+                    print(f'¡EIGEN ENCONTRADO EN CACHÉ!: {found_eigen_include}')
+            
+            # PCL
+            if not found_pcl_include and 'obj_io.h' in files:
+                if root_norm.endswith('/pcl/io'):
+                    found_pcl_include = root_norm.rsplit('/pcl/io', 1)[0]
+                    print(f'¡PCL ENCONTRADO EN CACHÉ!: {found_pcl_include}')
+
+            # B. BUSCAR LIBRERÍAS
+            # Recolectamos todas las que veamos
+            for f in files:
+                if f.endswith('.lib'):
+                    full_path = f'{root_norm}/{f}'
+                    if f.startswith('pcl_io') and not f.endswith('d.lib'): # Usamos pcl_io como marcador
+                         if not found_libs_dir:
+                             found_libs_dir = root_norm
+                             print(f'¡LIBRERÍAS DETECTADAS EN!: {found_libs_dir}')
+                    
+                    if f.startswith('pcl_') and not f.endswith('d.lib'): libs_pcl.append(full_path)
+                    elif f.startswith('opencv_') and not f.endswith('d.lib'): libs_cv.append(full_path)
+                    elif f.startswith('boost_') and not f.endswith('d.lib'): libs_boost.append(full_path)
+                    elif f == 'gdal_i.lib': lib_gdal = full_path
+
+        # --- VALIDACIÓN DE FALLBACK ---
+        # Si la busqueda profunda falló, usamos las rutas del entorno (aunque estén vacías, para no romper script)
+        if not found_eigen_include: found_eigen_include = f'{env_root}/Library/include/eigen3'
+        if not found_pcl_include: found_pcl_include = f'{env_root}/Library/include'
         
-        # Escribimos CMakeLists.txt
-        # NOTA: Ahora solo necesitamos incluir 'Library/include' porque ya movimos todo ahí.
+        # Limpieza de listas (pueden haber duplicados si buscamos en pkgs, tomamos los primeros)
+        # Es sucio, pero efectivo para compilar.
+        libs_pcl = list(set(libs_pcl))
+        libs_cv = list(set(libs_cv))
+        libs_boost = list(set(libs_boost))
+
+        # Preparamos string para CMake
+        all_libs = libs_pcl + libs_cv + libs_boost
+        if lib_gdal: all_libs.append(lib_gdal)
+        
+        # Normalizar barras
+        all_libs = [l.replace('\\\\', '/') for l in all_libs]
+        libs_str = ' '.join([f'\"{l}\"' for l in all_libs])
+        
+        print(f'Total librerías encontradas: {len(all_libs)}')
+
+        # --- GENERAR CMAKELISTS.TXT ---
         cmake_content = f'''
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
         
-        # INCLUDES SIMPLIFICADOS
-        include_directories(\"{base_dir}/Library/include\")
+        # INCLUDES DE LA BÚSQUEDA PROFUNDA
+        include_directories(\"{found_eigen_include}\")
+        include_directories(\"{found_pcl_include}\")
         include_directories(\"src\")
+        # Añadimos rutas estandar por si acaso
+        include_directories(\"{env_root}/Library/include\")
         
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
         
@@ -116,7 +125,11 @@ jobs:
         with open('CMakeLists.txt', 'w') as f:
             f.write(cmake_content)
         "
-        
+
+    # 4. COMPILACIÓN
+    - name: Compile
+      shell: bash -l {0}
+      run: |
         mkdir build
         cd build
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
