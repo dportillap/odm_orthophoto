@@ -23,7 +23,7 @@ jobs:
       run: |
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CIRUGÍA DE CARPETAS (Boost + OpenCV + PCL + Eigen)
+    # 3. CIRUGÍA DE CARPETAS COMPLETA
     - name: Surgical Consolidate
       shell: bash -l {0}
       run: |
@@ -41,9 +41,7 @@ jobs:
         dist_inc = os.path.abspath('MY_LIBS/include')
         dist_lib = os.path.abspath('MY_LIBS/lib')
         
-        # Limpiar y crear destino
-        if os.path.exists('MY_LIBS'):
-            shutil.rmtree('MY_LIBS')
+        if os.path.exists('MY_LIBS'): shutil.rmtree('MY_LIBS')
         os.makedirs(dist_inc)
         os.makedirs(dist_lib)
         
@@ -60,7 +58,6 @@ jobs:
                     eigen_found = True
                     break 
         if not eigen_found:
-             # Fallback típico
              fb = os.path.join(src_root, 'Library/include/eigen3/Eigen')
              if os.path.exists(fb): shutil.copytree(fb, os.path.join(dist_inc, 'Eigen'))
 
@@ -75,39 +72,19 @@ jobs:
                         shutil.copytree(root, target)
                         break
 
-        # --- 3. BOOST (NUEVO) ---
-        # Boost suele estar en Library/include/boost
+        # --- 3. BOOST ---
         boost_src = os.path.join(src_root, 'Library/include/boost')
         boost_target = os.path.join(dist_inc, 'boost')
-        
         if os.path.exists(boost_src):
             print(f'Copiando Boost desde: {boost_src}')
             shutil.copytree(boost_src, boost_target)
-        else:
-            print('WARN: No encontré Boost en ruta estándar. Buscando...')
-            for root, dirs, files in os.walk(src_root):
-                if 'version.hpp' in files and root.endswith('boost'):
-                     if not os.path.exists(boost_target):
-                         print(f'Boost encontrado en: {root}')
-                         shutil.copytree(root, boost_target)
-                         break
 
-        # --- 4. OPENCV (NUEVO - Preventivo) ---
-        # OpenCV suele estar en Library/include/opencv2
+        # --- 4. OPENCV ---
         cv_src = os.path.join(src_root, 'Library/include/opencv2')
         cv_target = os.path.join(dist_inc, 'opencv2')
-        
         if os.path.exists(cv_src):
             print(f'Copiando OpenCV desde: {cv_src}')
             shutil.copytree(cv_src, cv_target)
-        else:
-             # Búsqueda manual si falla la estándar
-             for root, dirs, files in os.walk(src_root):
-                if 'core.hpp' in files and root.endswith('opencv2'): # core.hpp es clave en opencv2
-                     if not os.path.exists(cv_target):
-                         print(f'OpenCV encontrado en: {root}')
-                         shutil.copytree(root, cv_target)
-                         break
 
         # --- 5. LIBRERÍAS .LIB ---
         count_libs = 0
@@ -121,10 +98,16 @@ jobs:
                         except: pass
         print(f'-> {count_libs} librerías .lib copiadas.')
 
-        # --- VERIFICACIÓN ---
-        print('\n--- MY_LIBS/include contiene: ---')
-        if os.path.exists(dist_inc):
-            print(os.listdir(dist_inc))
+        # --- 6. ARCHIVOS SUELTOS (GDAL y otros) ---
+        # Buscamos en Library/include raíz y copiamos todos los .h sueltos
+        root_include = os.path.join(src_root, 'Library/include')
+        print(f'Barriendo archivos sueltos en: {root_include}')
+        if os.path.exists(root_include):
+            for f in os.listdir(root_include):
+                src_f = os.path.join(root_include, f)
+                if os.path.isfile(src_f) and f.endswith('.h'):
+                    shutil.copy2(src_f, os.path.join(dist_inc, f))
+            print('-> Archivos sueltos copiados (incluyendo gdal_priv.h si existe)')
 
         # --- GENERAR CMAKELISTS.TXT ---
         inc_str = dist_inc.replace(os.sep, '/')
@@ -137,7 +120,6 @@ jobs:
         set(CMAKE_CXX_STANDARD 14)
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
         
-        # Incluimos nuestra carpeta consolidada
         include_directories(\"{inc_str}\")
         include_directories(\"src\")
         
