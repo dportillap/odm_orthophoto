@@ -8,124 +8,127 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 1. Instalamos Miniforge (CORREGIDO)
+    # 1. Instalamos Miniforge (SIN línea de python-version)
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v3
       with:
         miniforge-variant: Miniforge3
         miniforge-version: latest
         activate-environment: base
-        python-version: default  # <--- ESTA ES LA CLAVE: No toques la versión de Python
+        # Eliminamos la línea python-version para que use la del sistema
         
-    # 2. Instalamos librerías EN LA BASE (Directo a la vena)
+    # 2. Instalamos librerías EN LA BASE
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
-        # Instalamos todo en el entorno base actual
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. EL RASTREADOR ABSOLUTO (Busca dónde quedaron los archivos)
-    - name: Locate and Configure
+    # 3. CIRUGÍA DE CARPETAS (Consolidación en MY_LIBS)
+    - name: Surgical Consolidate
       shell: bash -l {0}
       run: |
         python -c "
         import os
+        import shutil
         import glob
         
-        # Buscamos en la raíz de la instalación de Conda
-        # En GitHub Actions suele ser C:/Users/runneradmin/miniconda3
-        base_search_dir = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
-        print(f'Escaner iniciado en: {base_search_dir}')
+        # Origen y Destino
+        src_root = os.environ['CONDA_PREFIX']
+        dist_inc = os.path.abspath('MY_LIBS/include')
+        dist_lib = os.path.abspath('MY_LIBS/lib')
         
-        found_includes = set()
-        # Siempre añadimos src
-        found_includes.add('src')
+        # Limpiar y crear destino
+        if os.path.exists('MY_LIBS'):
+            shutil.rmtree('MY_LIBS')
+        os.makedirs(dist_inc)
+        os.makedirs(dist_lib)
         
-        pcl_found = False
+        print(f'Buscando tesoros en: {src_root}')
+        
+        # --- 1. ENCONTRAR Y COPIAR EIGEN ---
+        # El objetivo es tener MY_LIBS/include/Eigen
         eigen_found = False
-        
-        # --- BUSQUEDA DE HEADERS (RECURSIVA) ---
-        for root, dirs, files in os.walk(base_search_dir):
-            root_norm = root.replace('\\\\', '/')
-            
-            # 1. BUSCAR EIGEN (StdVector)
-            if not eigen_found and 'StdVector' in files:
-                # El código pide <Eigen/StdVector>
-                if root_norm.endswith('/Eigen'):
-                    inc_path = root_norm.rsplit('/Eigen', 1)[0]
-                    print(f'¡EIGEN ENCONTRADO!: {inc_path}')
-                    found_includes.add(inc_path)
-                    eigen_found = True
+        for root, dirs, files in os.walk(src_root):
+            if 'StdVector' in files:
+                # Encontramos .../algo/Eigen/StdVector
+                if root.endswith('Eigen'):
+                    print(f'Eigen encontrado en: {root}')
+                    target = os.path.join(dist_inc, 'Eigen')
+                    if not os.path.exists(target):
+                        shutil.copytree(root, target)
+                        eigen_found = True
+                        print('-> Eigen copiado exitosamente.')
+                        break 
 
-            # 2. BUSCAR PCL (obj_io.h)
-            if not pcl_found and 'obj_io.h' in files:
-                # El código pide <pcl/io/obj_io.h>
-                if root_norm.endswith('/pcl/io'):
-                    inc_path = root_norm.rsplit('/pcl/io', 1)[0]
-                    print(f'¡PCL ENCONTRADO!: {inc_path}')
-                    found_includes.add(inc_path)
-                    pcl_found = True
-            
-            if eigen_found and pcl_found:
-                break
-        
-        # Fallback de seguridad
         if not eigen_found:
-            print('WARN: No encontré Eigen, adivinando ruta...')
-            found_includes.add(f'{base_search_dir}/Library/include/eigen3')
-        if not pcl_found:
-            print('WARN: No encontré PCL, adivinando ruta...')
-            found_includes.add(f'{base_search_dir}/Library/include')
+            print('ERROR: No se encontró Eigen. Intentando ruta hardcoded...')
+            # Intento desesperado en carpeta Library
+            hardcoded = os.path.join(src_root, 'Library/include/eigen3/Eigen')
+            if os.path.exists(hardcoded):
+                shutil.copytree(hardcoded, os.path.join(dist_inc, 'Eigen'))
 
-        # --- BUSQUEDA DE LIBRERIAS (.LIB) ---
-        pcl_libs = []
-        cv_libs = []
-        boost_libs = []
-        gdal_libs = []
+        # --- 2. ENCONTRAR Y COPIAR PCL ---
+        # El objetivo es tener MY_LIBS/include/pcl
+        pcl_found = False
+        for root, dirs, files in os.walk(src_root):
+            if 'pcl_base.h' in files:
+                # Verificamos que la carpeta padre sea 'pcl'
+                path_parts = root.replace('\\\\', '/').split('/')
+                if path_parts[-1] == 'pcl':
+                    print(f'PCL encontrado en: {root}')
+                    target = os.path.join(dist_inc, 'pcl')
+                    if not os.path.exists(target):
+                        shutil.copytree(root, target)
+                        pcl_found = True
+                        print('-> PCL copiado exitosamente.')
+                        break
 
-        print('Buscando librerias .lib recursivamente...')
-        for root, dirs, files in os.walk(base_search_dir):
-            root_norm = root.replace('\\\\', '/')
+        # --- 3. COPIAR LIBRERÍAS .LIB ---
+        count_libs = 0
+        for root, dirs, files in os.walk(src_root):
             for f in files:
                 if f.endswith('.lib'):
-                    full_path = f'{root_norm}/{f}'
-                    
-                    if f.startswith('pcl_') and not f.endswith('d.lib'):
-                         pcl_libs.append(full_path)
-                    elif f.startswith('opencv_') and not f.endswith('d.lib'):
-                         cv_libs.append(full_path)
-                    elif f.startswith('boost_') and not f.endswith('d.lib'):
-                         boost_libs.append(full_path)
-                    elif f == 'gdal_i.lib':
-                         gdal_libs.append(full_path)
-        
-        all_libs = pcl_libs + cv_libs + boost_libs + gdal_libs
-        all_libs = list(set(all_libs))
-        
-        print(f'Total Librerías encontradas: {len(all_libs)}')
+                    if any(x in f for x in ['pcl_', 'opencv_', 'boost_', 'gdal_i']):
+                        try:
+                            shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
+                            count_libs += 1
+                        except: pass
+        print(f'-> {count_libs} librerías .lib copiadas.')
 
-        # --- GENERAR CMAKELISTS.TXT ---
-        inc_str = ' '.join([f'\"{p}\"' for p in found_includes])
-        libs_str = ' '.join([f'\"{l}\"' for l in all_libs])
+        # --- 4. VERIFICACIÓN ---
+        print('\n--- VERIFICACIÓN DE MY_LIBS/include ---')
+        if os.path.exists(dist_inc):
+            print(os.listdir(dist_inc))
+
+        # --- 5. GENERAR CMAKELISTS.TXT ---
+        inc_str = dist_inc.replace(os.sep, '/')
+        lib_str = dist_lib.replace(os.sep, '/') + '/*.lib'
         
-        cmake_content = f'''
+        # Truco para las llaves de GitHub:
+        # Separamos el signo $ de las llaves
+        var_start = '$' + '{ALL_LIBS}'
+        
+        cmake_txt = f'''
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
         set(CMAKE_CXX_STANDARD 14)
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
         
-        # Rutas calculadas por el Rastreador
-        include_directories({inc_str})
+        # Incluimos nuestra carpeta verificada
+        include_directories(\"{inc_str}\")
+        include_directories(\"src\")
+        
+        file(GLOB ALL_LIBS \"{lib_str}\")
         
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
         
-        target_link_libraries(odm_orthophoto {libs_str})
+        target_link_libraries(odm_orthophoto {var_start})
         '''
         
         with open('CMakeLists.txt', 'w') as f:
-            f.write(cmake_content)
-            
-        print('--- CMakeLists.txt generado ---')
+            f.write(cmake_txt)
+        
+        print('--- CMakeLists.txt Listo ---')
         "
 
     # 4. COMPILACIÓN
