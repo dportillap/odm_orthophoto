@@ -23,82 +23,57 @@ jobs:
       run: |
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CIRUGÍA DE CARPETAS
+    # 3. CIRUGÍA DE CARPETAS (Consolidación)
     - name: Surgical Consolidate
       shell: bash -l {0}
       run: |
         python -c "
-        import os
-        import shutil
-        import glob
-        
-        if 'CONDA_PREFIX' in os.environ:
-            src_root = os.environ['CONDA_PREFIX']
-        else:
-            src_root = 'C:/Users/runneradmin/miniconda3'
-            
+        import os, shutil, glob
+        if 'CONDA_PREFIX' in os.environ: src_root = os.environ['CONDA_PREFIX']
+        else: src_root = 'C:/Users/runneradmin/miniconda3'
         dist_inc = os.path.abspath('MY_LIBS/include')
         dist_lib = os.path.abspath('MY_LIBS/lib')
-        
         if os.path.exists('MY_LIBS'): shutil.rmtree('MY_LIBS')
         os.makedirs(dist_inc)
         os.makedirs(dist_lib)
         
-        # --- 1. HEADERS ---
-        # Eigen
+        # Headers Logic
         for root, dirs, files in os.walk(src_root):
             if 'StdVector' in files and root.endswith('Eigen'):
-                if not os.path.exists(os.path.join(dist_inc, 'Eigen')):
-                    shutil.copytree(root, os.path.join(dist_inc, 'Eigen'))
-                    break
-        fb_eigen = os.path.join(src_root, 'Library/include/eigen3/Eigen')
-        if not os.path.exists(os.path.join(dist_inc, 'Eigen')) and os.path.exists(fb_eigen):
-            shutil.copytree(fb_eigen, os.path.join(dist_inc, 'Eigen'))
-
-        # PCL
-        for root, dirs, files in os.walk(src_root):
+                if not os.path.exists(os.path.join(dist_inc, 'Eigen')): shutil.copytree(root, os.path.join(dist_inc, 'Eigen'))
             if 'pcl_base.h' in files:
-                path_parts = root.replace('\\\\', '/').split('/')
-                if path_parts[-1] == 'pcl':
-                    if not os.path.exists(os.path.join(dist_inc, 'pcl')):
-                        shutil.copytree(root, os.path.join(dist_inc, 'pcl'))
-                        break
-
-        # Boost & OpenCV
-        bst = os.path.join(src_root, 'Library/include/boost')
-        if os.path.exists(bst): shutil.copytree(bst, os.path.join(dist_inc, 'boost'))
+                if root.endswith('pcl') and not os.path.exists(os.path.join(dist_inc, 'pcl')): shutil.copytree(root, os.path.join(dist_inc, 'pcl'))
+        
+        boost_src = os.path.join(src_root, 'Library/include/boost')
+        if os.path.exists(boost_src): shutil.copytree(boost_src, os.path.join(dist_inc, 'boost'))
         
         cv = os.path.join(src_root, 'Library/include/opencv2')
         if os.path.exists(cv): shutil.copytree(cv, os.path.join(dist_inc, 'opencv2'))
 
-        # Archivos sueltos
         root_inc = os.path.join(src_root, 'Library/include')
         if os.path.exists(root_inc):
             for f in os.listdir(root_inc):
-                if f.endswith('.h'):
-                    shutil.copy2(os.path.join(root_inc, f), os.path.join(dist_inc, f))
+                if f.endswith('.h'): shutil.copy2(os.path.join(root_inc, f), os.path.join(dist_inc, f))
 
-        # --- 2. LIBRERÍAS .LIB ---
+        # Libs Logic
         for root, dirs, files in os.walk(src_root):
             for f in files:
                 if f.endswith('.lib'):
                     if any(x in f for x in ['pcl_', 'opencv_', 'boost_', 'gdal']):
-                        try:
-                            shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
+                        try: shutil.copy2(os.path.join(root, f), os.path.join(dist_lib, f))
                         except: pass
 
-        # --- 3. PARCHE DE CÓDIGO ---
+        # Patch Code
         if os.path.exists('src/OdmOrthoPhoto.cpp'):
             with open('src/OdmOrthoPhoto.cpp', 'r') as f: content = f.read()
             if '#include <boost/algorithm/string.hpp>' not in content:
                 includes = '#include <boost/algorithm/string.hpp>\n#include <boost/lexical_cast.hpp>\n#include <boost/filesystem.hpp>\n'
                 with open('src/OdmOrthoPhoto.cpp', 'w') as f: f.write(includes + content)
 
-        # --- 4. GENERAR CMAKELISTS.TXT ---
+        # CMakeLists
         inc_str = dist_inc.replace(os.sep, '/')
         lib_str = dist_lib.replace(os.sep, '/') + '/*.lib'
         var_start = '$' + '{ALL_LIBS}'
-        
         cmake_txt = f'''
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
@@ -122,59 +97,49 @@ jobs:
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
 
-    # 5. EMPAQUETADO DE DLLs (EL SALVAVIDAS)
-    - name: Bundle DLLs
+    # 5. EMPAQUETADO DE DLLs (EL GRAN BARRIDO)
+    - name: Deep Bundle DLLs
       shell: bash -l {0}
       run: |
         python -c "
         import os
         import shutil
-        import glob
         
-        # Origen: Carpeta bin de Conda (ahí viven las DLLs)
+        # Origen: Buscamos en todo el entorno
         if 'CONDA_PREFIX' in os.environ:
-            bin_root = os.path.join(os.environ['CONDA_PREFIX'], 'Library', 'bin')
+            src_root = os.environ['CONDA_PREFIX']
         else:
-            bin_root = 'C:/Users/runneradmin/miniconda3/Library/bin'
+            src_root = 'C:/Users/runneradmin/miniconda3'
             
-        # Destino: Donde está nuestro .exe
         exe_dir = 'build/Release'
+        print(f'Buscando DLLs recursivamente en: {src_root}')
         
-        print(f'Buscando DLLs en: {bin_root}')
-        
-        # Lista de DLLs que necesitamos (usamos wildcards *)
-        patterns = [
-            'boost_filesystem*.dll',
-            'boost_system*.dll',
-            'boost_date_time*.dll',
-            'boost_chrono*.dll',
-            'gdal*.dll',
-            'opencv*.dll',
-            'tbb*.dll',  # A veces OpenCV necesita TBB
-            'zlib*.dll',
-            'jpeg*.dll',
-            'tiff*.dll',
-            'geos*.dll',
-            'proj*.dll'
-        ]
-        
+        # LISTA CORREGIDA Y AMPLIADA
+        dll_keywords = ['pcl', 'boost', 'gdal', 'opencv', 'tbb', 'zlib', 'jpeg', 'tiff', 'geos', 'proj']
         count = 0
-        for pattern in patterns:
-            for file in glob.glob(os.path.join(bin_root, pattern)):
-                try:
-                    shutil.copy2(file, exe_dir)
-                    print(f'Copiado: {os.path.basename(file)}')
-                    count += 1
-                except Exception as e:
-                    print(f'Error copiando {file}: {e}')
+        copied_files = set()
+        
+        for root, dirs, files in os.walk(src_root):
+            for f in files:
+                if f.endswith('.dll'):
+                    # Si el nombre contiene alguna palabra clave
+                    if any(k in f.lower() for k in dll_keywords):
+                        # Evitamos copiar duplicados si ya copiamos uno con ese nombre
+                        if f not in copied_files:
+                            try:
+                                shutil.copy2(os.path.join(root, f), exe_dir)
+                                print(f'DLL encontrada y copiada: {f}')
+                                copied_files.add(f)
+                                count += 1
+                            except: pass
                     
-        print(f'--> Total DLLs copiadas: {count}')
+        print(f'--> Total DLLs empaquetadas: {count}')
         "
         
-    # 6. Subida (Ahora sube el EXE y las DLLs juntas)
+    # 6. Subida
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: odm_orthophoto_full_pack
+        name: odm_orthophoto_full_pack_v3
         path: build/Release/
         compression-level: 0
