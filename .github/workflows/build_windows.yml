@@ -8,24 +8,24 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     
-    # 1. Instalamos Miniforge
+    # 1. Instalamos Miniforge (SIN FORZAR VERSIÓN DE PYTHON)
     - name: Setup Miniforge
       uses: conda-incubator/setup-miniconda@v3
       with:
         miniforge-variant: Miniforge3
         miniforge-version: latest
-        # IMPORTANTE: No creamos entorno nuevo, usamos 'base'
         activate-environment: base
-        python-version: 3.9
+        # python-version: 3.9  <-- ELIMINADO PARA EVITAR CONFLICTOS
         
     # 2. Instalamos librerías EN LA BASE (Directo a la vena)
     - name: Install Dependencies
       shell: bash -l {0}
       run: |
         # Instalamos todo en el entorno base actual
+        # Esto garantiza que los archivos estén en una ruta conocida
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. EL RASTREADOR ABSOLUTO (Busca dónde rayos quedaron los archivos)
+    # 3. EL RASTREADOR ABSOLUTO (Busca dónde quedaron los archivos)
     - name: Locate and Configure
       shell: bash -l {0}
       run: |
@@ -45,7 +45,7 @@ jobs:
         pcl_found = False
         eigen_found = False
         
-        # --- BUSQUEDA DE HEADERS ---
+        # --- BUSQUEDA DE HEADERS (RECURSIVA) ---
         for root, dirs, files in os.walk(base_search_dir):
             root_norm = root.replace('\\\\', '/')
             
@@ -71,11 +71,11 @@ jobs:
                     found_includes.add(inc_path)
                     pcl_found = True
             
-            # Si encontramos ambos, podemos parar de buscar headers (optimización)
+            # Si encontramos ambos, podemos parar de buscar headers
             if eigen_found and pcl_found:
                 break
         
-        # Fallback de seguridad por si el escáner falla
+        # Fallback de seguridad
         if not eigen_found:
             print('WARN: No encontré Eigen, adivinando ruta...')
             found_includes.add(f'{base_search_dir}/Library/include/eigen3')
@@ -84,23 +84,39 @@ jobs:
             found_includes.add(f'{base_search_dir}/Library/include')
 
         # --- BUSQUEDA DE LIBRERIAS (.LIB) ---
-        # Buscamos en todo el directorio Library/lib
-        lib_search_dir = f'{base_search_dir}/Library/lib'
-        
-        pcl_libs = glob.glob(f'{lib_search_dir}/pcl_*.lib')
-        cv_libs = glob.glob(f'{lib_search_dir}/opencv_*.lib')
-        boost_libs = glob.glob(f'{lib_search_dir}/boost_*.lib')
-        gdal_libs = glob.glob(f'{lib_search_dir}/gdal_i.lib')
+        # Buscamos recursivamente porque a veces no están en Library/lib
+        pcl_libs = []
+        cv_libs = []
+        boost_libs = []
+        gdal_libs = []
+
+        print('Buscando librerias .lib recursivamente...')
+        for root, dirs, files in os.walk(base_search_dir):
+            root_norm = root.replace('\\\\', '/')
+            for f in files:
+                if f.endswith('.lib'):
+                    full_path = f'{root_norm}/{f}'
+                    
+                    if f.startswith('pcl_') and not f.endswith('d.lib'):
+                         pcl_libs.append(full_path)
+                    elif f.startswith('opencv_') and not f.endswith('d.lib'):
+                         cv_libs.append(full_path)
+                    elif f.startswith('boost_') and not f.endswith('d.lib'):
+                         boost_libs.append(full_path)
+                    elif f == 'gdal_i.lib':
+                         gdal_libs.append(full_path)
         
         all_libs = pcl_libs + cv_libs + boost_libs + gdal_libs
-        # Normalizamos barras
-        all_libs = [l.replace('\\\\', '/') for l in all_libs]
+        
+        # Eliminar duplicados si los hubiera
+        all_libs = list(set(all_libs))
         
         print(f'Total Librerías encontradas: {len(all_libs)}')
 
         # --- GENERAR CMAKELISTS.TXT ---
         # Convertimos sets/listas a strings para CMake
         inc_str = ' '.join([f'\"{p}\"' for p in found_includes])
+        # Usamos replace para asegurar slash normal en Windows
         libs_str = ' '.join([f'\"{l}\"' for l in all_libs])
         
         cmake_content = f'''
