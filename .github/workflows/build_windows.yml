@@ -23,7 +23,7 @@ jobs:
       run: |
         mamba install -n base -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. CIRUGÍA DE CARPETAS (Consolidación)
+    # 3. CONSOLIDACIÓN (Compilación)
     - name: Surgical Consolidate
       shell: bash -l {0}
       run: |
@@ -97,7 +97,7 @@ jobs:
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
 
-    # 5. EMPAQUETADO DE DLLs (EL GRAN BARRIDO)
+    # 5. EMPAQUETADO DE DLLs (ACTUALIZADO CON ARCHIVE)
     - name: Deep Bundle DLLs
       shell: bash -l {0}
       run: |
@@ -105,26 +105,26 @@ jobs:
         import os
         import shutil
         
-        # Origen: Buscamos en todo el entorno
-        if 'CONDA_PREFIX' in os.environ:
-            src_root = os.environ['CONDA_PREFIX']
-        else:
-            src_root = 'C:/Users/runneradmin/miniconda3'
+        if 'CONDA_PREFIX' in os.environ: src_root = os.environ['CONDA_PREFIX']
+        else: src_root = 'C:/Users/runneradmin/miniconda3'
             
         exe_dir = 'build/Release'
         print(f'Buscando DLLs recursivamente en: {src_root}')
         
-        # LISTA CORREGIDA Y AMPLIADA
-        dll_keywords = ['pcl', 'boost', 'gdal', 'opencv', 'tbb', 'zlib', 'jpeg', 'tiff', 'geos', 'proj']
+        # LISTA EXTENDIDA PARA NO FALLAR MÁS
+        dll_keywords = [
+            'pcl', 'boost', 'gdal', 'opencv', 'tbb', 
+            'zlib', 'jpeg', 'tiff', 'geos', 'proj',
+            'archive', 'bz2', 'lzma', 'iconv', 'zstd', 'xml'
+        ]
+        
         count = 0
         copied_files = set()
         
         for root, dirs, files in os.walk(src_root):
             for f in files:
                 if f.endswith('.dll'):
-                    # Si el nombre contiene alguna palabra clave
                     if any(k in f.lower() for k in dll_keywords):
-                        # Evitamos copiar duplicados si ya copiamos uno con ese nombre
                         if f not in copied_files:
                             try:
                                 shutil.copy2(os.path.join(root, f), exe_dir)
@@ -132,7 +132,6 @@ jobs:
                                 copied_files.add(f)
                                 count += 1
                             except: pass
-                    
         print(f'--> Total DLLs empaquetadas: {count}')
         "
         
@@ -140,6 +139,6 @@ jobs:
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: odm_orthophoto_full_pack_v3
+        name: odm_orthophoto_full_pack_v4
         path: build/Release/
         compression-level: 0
