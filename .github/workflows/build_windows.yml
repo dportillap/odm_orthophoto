@@ -23,69 +23,78 @@ jobs:
       run: |
         mamba install -c conda-forge cmake ninja compilers gdal opencv pcl boost eigen -y
 
-    # 3. DIAGNÓSTICO VISUAL (¡Para ver qué rayos hay ahí!)
-    - name: Debug File System
-      shell: bash -l {0}
-      run: |
-        echo "=== EXPLORANDO CARPETAS DE INCLUSIÓN ==="
-        ls -F "$CONDA_PREFIX/Library/include"
-        echo "========================================"
-        # Verificar si existe eigen3
-        if [ -d "$CONDA_PREFIX/Library/include/eigen3" ]; then
-            echo "DENTRO DE EIGEN3:"
-            ls -F "$CONDA_PREFIX/Library/include/eigen3"
-        fi
-
-    # 4. GENERACIÓN "ESCOPETA" (Añadir todas las rutas posibles)
-    - name: Generate Config
+    # 3. EL ARQUITECTO MATEMÁTICO (Calcula las rutas restando el path relativo)
+    - name: Reverse Engineer Paths
       shell: bash -l {0}
       run: |
         python -c "
         import os
         import glob
         
-        prefix = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
-        inc_dir = f'{prefix}/Library/include'
-        lib_dir = f'{prefix}/Library/lib'
+        base_dir = os.environ['CONDA_PREFIX'].replace('\\\\', '/')
+        lib_dir = f'{base_dir}/Library/lib'
+        print(f'Escaner iniciado en: {base_dir}')
         
-        # --- LISTA DE INCLUDES ---
-        # Añadimos la raíz
-        includes = [inc_dir, 'src']
+        detected_includes = set()
+        # Siempre añadimos la base y src por seguridad
+        detected_includes.add(f'{base_dir}/Library/include')
+        detected_includes.add('src')
         
-        # Añadimos subcarpetas comunes de Eigen
-        includes.append(f'{inc_dir}/eigen3')
-        includes.append(f'{inc_dir}/Eigen')
+        # --- BUSQUEDA INTELIGENTE DE HEADERS ---
+        for root, dirs, files in os.walk(base_dir):
+            root_norm = root.replace('\\\\', '/')
+            
+            # CASO 1: EIGEN
+            # El codigo pide <Eigen/StdVector>
+            # Buscamos el archivo 'StdVector'
+            if 'StdVector' in files:
+                # Si la carpeta donde lo encontramos termina en '/Eigen',
+                # significa que encontramos .../RutaCorrecta/Eigen/StdVector
+                if root_norm.endswith('/Eigen'):
+                    # Cortamos los ultimos 6 caracteres ('/Eigen') para obtener '.../RutaCorrecta'
+                    include_root = root_norm[:-6]
+                    print(f'¡EIGEN ENCONTRADO! Ruta real: {root_norm}')
+                    print(f' -> Include necesario: {include_root}')
+                    detected_includes.add(include_root)
+
+            # CASO 2: PCL
+            # El codigo pide <pcl/io/obj_io.h>
+            # Buscamos 'obj_io.h'
+            if 'obj_io.h' in files:
+                # Si la carpeta termina en '/pcl/io', encontramos .../RutaCorrecta/pcl/io/obj_io.h
+                if root_norm.endswith('/pcl/io'):
+                    # Cortamos los ultimos 7 caracteres ('/pcl/io')
+                    include_root = root_norm[:-7]
+                    print(f'¡PCL ENCONTRADO! Ruta real: {root_norm}')
+                    print(f' -> Include necesario: {include_root}')
+                    detected_includes.add(include_root)
+
+        # Preparamos el string para CMake
+        includes_str = ' '.join([f'\"{p}\"' for p in detected_includes])
         
-        # Añadimos TODAS las carpetas de versión de PCL que encontremos
-        if os.path.exists(inc_dir):
-            for item in os.listdir(inc_dir):
-                full_path = f'{inc_dir}/{item}'
-                if os.path.isdir(full_path):
-                    # Si es pcl-1.X, lo añadimos
-                    if item.startswith('pcl-'):
-                        print(f'Añadiendo ruta PCL: {full_path}')
-                        includes.append(full_path)
+        # --- BUSQUEDA DE LIBRERÍAS (GLOB) ---
+        # Buscamos recursivamente cualquier .lib de PCL, OpenCV, Boost
+        pcl_libs = []
+        cv_libs = []
+        boost_libs = []
+        gdal_libs = []
         
-        # Convertimos a string para CMake
-        includes_str = ' '.join([f'\"{p}\"' for p in includes])
-        
-        # --- LISTA DE LIBRERÍAS ---
-        pcl_libs = glob.glob(f'{lib_dir}/pcl_*.lib')
-        cv_libs = glob.glob(f'{lib_dir}/opencv_*.lib')
-        boost_libs = glob.glob(f'{lib_dir}/boost_*.lib')
-        gdal_lib = f'{lib_dir}/gdal_i.lib'
-        
-        all_libs = pcl_libs + cv_libs + boost_libs
-        # Añadimos GDAL solo si existe
-        if os.path.exists(gdal_lib):
-             all_libs.append(gdal_lib)
-        
-        all_libs = [l.replace('\\\\', '/') for l in all_libs]
+        for root, dirs, files in os.walk(lib_dir):
+            root_norm = root.replace('\\\\', '/')
+            for f in files:
+                if f.endswith('.lib'):
+                    full_path = f'{root_norm}/{f}'
+                    if f.startswith('pcl_') and not f.endswith('d.lib'): pcl_libs.append(full_path)
+                    elif f.startswith('opencv_') and not f.endswith('d.lib'): cv_libs.append(full_path)
+                    elif f.startswith('boost_') and not f.endswith('d.lib'): boost_libs.append(full_path)
+                    elif f == 'gdal_i.lib': gdal_libs.append(full_path)
+
+        all_libs = pcl_libs + cv_libs + boost_libs + gdal_libs
         all_libs_str = ' '.join([f'\"{l}\"' for l in all_libs])
         
-        print(f'Includes usados: {includes_str}')
+        print(f'Total Librerias: {len(all_libs)}')
 
-        # --- ESCRITURA ---
+        # --- GENERAR CMAKELISTS.TXT ---
         cmake_content = f'''
         cmake_minimum_required(VERSION 3.5)
         project(odm_orthophoto)
@@ -93,7 +102,7 @@ jobs:
         
         add_definitions(-D_CRT_SECURE_NO_WARNINGS -DNOMINMAX -DBOOST_USE_WINDOWS_H)
         
-        # Inyectamos TODAS las rutas posibles
+        # Inyectamos las rutas calculadas matemáticamente
         include_directories({includes_str})
         
         add_executable(odm_orthophoto src/OdmOrthoPhoto.cpp src/Logger.cpp src/main.cpp)
@@ -103,9 +112,11 @@ jobs:
         
         with open('CMakeLists.txt', 'w') as f:
             f.write(cmake_content)
+            
+        print('--- CMakeLists.txt generado ---')
         "
 
-    # 5. COMPILACIÓN
+    # 4. COMPILACIÓN
     - name: Compile
       shell: bash -l {0}
       run: |
@@ -114,7 +125,7 @@ jobs:
         cmake .. -G "Visual Studio 16 2019" -A x64 -DCMAKE_BUILD_TYPE=Release
         cmake --build . --config Release
         
-    # 6. Subida
+    # 5. Subida
     - name: Upload Artifact
       uses: actions/upload-artifact@v4
       with:
